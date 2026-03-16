@@ -4,11 +4,11 @@ One signature format for every protocol on the Internet.
 
 ## Overview
 
-UASI is a proposed IETF standard (`draft-uasi-framework-00`) that provides protocol-agnostic cryptographic sender authentication using DNS-published Ed25519 keys. Think "DKIM, but for everything."
+UASI is a proposed IETF standard ([draft-uasi-framework-00](https://datatracker.ietf.org/doc/draft-uasi-framework/)) that provides protocol-agnostic cryptographic sender authentication using DNS-published Ed25519 keys. Think "DKIM, but for everything."
 
 | Component | Location | Status |
 |-----------|----------|--------|
-| Internet-Draft | `spec/draft-uasi-framework-00.txt` | Submitted to IETF datatracker |
+| Internet-Draft | [`spec/draft-uasi-framework-00.txt`](https://datatracker.ietf.org/doc/draft-uasi-framework/) | Live on IETF datatracker |
 | Reference library | `lib/` | 23 tests passing, MIT license |
 | Report schema | `schema/draft-uasi-report-format-00.txt` | Companion I-D |
 | 5-minute explainer | `docs/uasi-in-5-minutes.md` | For platform engineers |

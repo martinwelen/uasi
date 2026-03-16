@@ -181,7 +181,7 @@ print(policy.policy, policy.percentage, policy.bindings)
 
 ## Specification
 
-This library implements `draft-uasi-framework-00`. The full Internet-Draft is available in the [spec/](spec/) directory.
+This library implements [`draft-uasi-framework-00`](https://datatracker.ietf.org/doc/draft-uasi-framework/). The full Internet-Draft is available in the [spec/](spec/) directory.
 
 ## Contributing
 
