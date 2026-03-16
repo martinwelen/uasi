@@ -38,10 +38,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mwelen/uasi"
-Documentation = "https://github.com/mwelen/uasi#readme"
-Repository = "https://github.com/mwelen/uasi"
-Issues = "https://github.com/mwelen/uasi/issues"
+Homepage = "https://github.com/martinwelen/uasi"
+Documentation = "https://github.com/martinwelen/uasi#readme"
+Repository = "https://github.com/martinwelen/uasi"
+Issues = "https://github.com/martinwelen/uasi/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/uasi"]

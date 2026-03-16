@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://img.shields.io/badge/tests-23%20passing-brightgreen.svg)]()
 
-Reference implementation of the [UASI framework](https://github.com/mwelen/uasi) (`draft-uasi-framework-00`), a protocol-agnostic mechanism for cryptographic sender identity assertion and verification across Internet communication protocols.
+Reference implementation of the [UASI framework](https://github.com/martinwelen/uasi) (`draft-uasi-framework-00`), a protocol-agnostic mechanism for cryptographic sender identity assertion and verification across Internet communication protocols.
 
 **UASI lets any sender — webhook, API, email server, IoT device — prove its identity using DNS-published keys and a single signature format that works across all protocols.**
 
