@@ -1,0 +1,2986 @@
+
+
+
+
+
+Internet Engineering Task Force (IETF)                    M. Welen, Ed.
+Internet-Draft                                             Atea Sverige
+Intended status: Standards Track                          March 18, 2026
+Expires: September 18, 2026
+
+
+         Universal Authenticated Sender Identity (UASI)
+                      draft-uasi-framework-01
+
+Abstract
+
+   This document defines the Universal Authenticated Sender Identity
+   (UASI) framework, a cross-protocol sender authentication framework
+   that unifies identity, key discovery, and verification policy
+   across Internet protocols.  Where established signing mechanisms
+   exist (HTTP Message Signatures [RFC9421], DKIM [RFC6376] for
+   SMTP), UASI profiles them and adds DNS-based key discovery and
+   unified policy.  Where no signing standard exists (MQTT, CoAP,
+   WebSocket), UASI provides native signing.  The framework enables
+   any sending entity -- whether a mail server, an API endpoint, an
+   IoT device, or a messaging service -- to assert its identity in a
+   manner that receivers can independently verify.  UASI supports
+   multiple trust tiers (DNSSEC-verified, HTTPS-verified, and DNS-
+   unsigned) and is designed to be incrementally deployable alongside
+   existing authentication mechanisms.
+
+Status of This Memo
+
+   This Internet-Draft is submitted in full conformance with the
+   provisions of BCP 78 and BCP 79.
+
+   Internet-Drafts are working documents of the Internet Engineering
+   Task Force (IETF).  Note that other groups may also distribute
+   working documents as Internet-Drafts.  The list of current
+   Internet-Drafts is at https://datatracker.ietf.org/drafts/current/.
+
+   Internet-Drafts are draft documents valid for a maximum of six
+   months and may be updated, replaced, or obsoleted by other
+   documents at any time.  It is inappropriate to use Internet-Drafts
+   as reference material or to cite them other than as "work in
+   progress."
+
+   This Internet-Draft will expire on September 18, 2026.
+
+Copyright Notice
+
+   Copyright (c) 2026 IETF Trust and the persons identified as the
+   document authors.  All rights reserved.
+
+   This document is subject to BCP 78 and the IETF Trust's Legal
+   Provisions Relating to IETF Documents
+   (https://trustee.ietf.org/license-info) in effect on the date of
+   publication of this document.  Please review these documents
+   carefully, as they describe your rights and restrictions with
+   respect to this document.  Code Components extracted from this
+   document must include Revised BSD License text as described in
+   Section 4.e of the Trust Legal Provisions and are provided
+   without warranty as described in the Revised BSD License.
+
+
+
+Table of Contents
+
+   1.  Introduction  . . . . . . . . . . . . . . . . . . . . . .   4
+   2.  Terminology . . . . . . . . . . . . . . . . . . . . . . .   7
+   3.  Problem Statement . . . . . . . . . . . . . . . . . . . .  10
+   4.  Architecture Overview . . . . . . . . . . . . . . . . . .  13
+   5.  Trust Model . . . . . . . . . . . . . . . . . . . . . . .  17
+   6.  Identity Model  . . . . . . . . . . . . . . . . . . . . .  20
+   7.  Key Publication and Discovery . . . . . . . . . . . . . .  25
+   8.  Signature Format (Native Adapters)  . . . . . . . . . . .  32
+   9.  Protocol Adapters . . . . . . . . . . . . . . . . . . . .  38
+   10. Unified Verification Procedure  . . . . . . . . . . . . .  52
+   11. Policy Layer  . . . . . . . . . . . . . . . . . . . . . .  59
+   12. Migration and Coexistence . . . . . . . . . . . . . . . .  65
+   13. Security Considerations . . . . . . . . . . . . . . . . .  69
+   14. IANA Considerations . . . . . . . . . . . . . . . . . . .  80
+   15. References  . . . . . . . . . . . . . . . . . . . . . . .  84
+   Appendix A. Example Flows . . . . . . . . . . . . . . . . . .  87
+   Appendix B. Comparison with Existing Mechanisms . . . . . . .  95
+   Appendix C. Selector Management Patterns  . . . . . . . . . .  97
+   Appendix D. Changes from draft-uasi-framework-00  . . . . . . 100
+   Acknowledgements  . . . . . . . . . . . . . . . . . . . . . . 103
+   Authors' Addresses  . . . . . . . . . . . . . . . . . . . . . 103
+
+
+1.  Introduction
+
+1.1.  Background
+
+   The Internet was designed in an era of implicit trust between
+   communicating parties.  As the network grew from a small research
+   community to a global infrastructure carrying commerce, governance,
+   and personal communications, the absence of built-in sender
+   authentication became an increasingly severe liability.
+
+   The consequences are visible across every layer of the stack.
+   Email suffers from phishing and spoofing despite decades of
+   incremental improvements through SPF [RFC7208], DKIM [RFC6376],
+   and DMARC [RFC7489].  Webhook receivers have no standardized way
+   to verify that an incoming HTTP request genuinely originated from
+   a claimed service.  IoT devices routinely accept commands without
+   verifying the identity of the sender.  API consumers rely on
+   shared secrets and bespoke token schemes rather than
+   cryptographic identity.
+
+   Each protocol community has addressed this gap independently,
+   producing solutions that are:
+
+   o  Protocol-specific: DKIM works for email but not MQTT.  HTTP
+      Message Signatures [RFC9421] works for HTTP but not CoAP.
+
+   o  Partial: SPF authenticates the sending IP, DKIM authenticates
+      message content, DMARC ties them to the domain -- yet all three
+      are needed for reasonable email authentication.
+
+   o  Opt-in: Deployment requires active configuration by both
+      senders and receivers, resulting in decades-long adoption
+      curves.
+
+   o  Inconsistent: The identity model, key distribution mechanism,
+      signature algorithms, and policy semantics differ across every
+      protocol, making cross-protocol security reasoning difficult.
+
+1.2.  Observations
+
+   This framework is built on three observations:
+
+   (1) The fragmentation problem is real.  Organizations that operate
+       across multiple protocols must configure and maintain separate
+       authentication systems for each, with inconsistent identity
+       models, key management, and policy semantics.
+
+   (2) Good signing mechanisms already exist for some protocols.
+       HTTP Message Signatures [RFC9421] provides a mature,
+       flexible signing framework for HTTP.  DKIM [RFC6376] has
+       been deployed for email authentication for over a decade.
+       These mechanisms lack standardized cross-protocol key
+       discovery and unified policy, but their signing primitives
+       are sound.
+
+   (3) Protocols without signing standards still need one.  MQTT,
+       CoAP, and WebSocket have no standardized message-level
+       signing mechanism.  For these protocols, UASI provides
+       native signing.
+
+   UASI therefore takes an adapter-based approach: where signing
+   standards exist, UASI profiles them and adds DNS-based key
+   discovery and unified policy.  Where no signing standard exists,
+   UASI provides native signing.  The cross-protocol identity model,
+   key discovery procedure, and unified verification/policy engine
+   are the core contributions.
+
+1.3.  Goals
+
+   The Universal Authenticated Sender Identity (UASI) framework
+   addresses the fragmentation problem with the following design
+   goals:
+
+   (a) Cross-protocol identity: A single identity model
+       (<selector>._uasi.<domain>) usable across all Internet
+       communication protocols.
+
+   (b) Leverage existing standards: Profile RFC 9421 for HTTP and
+       wrap DKIM for SMTP rather than inventing new signing formats
+       for protocols that already have them.
+
+   (c) Flexible trust: Support multiple trust tiers -- DNSSEC-
+       verified, HTTPS-verified via .well-known, and DNS-unsigned --
+       letting domain operators choose the trust level appropriate
+       to their deployment.
+
+   (d) DNS-anchored key discovery: Public keys published in DNS,
+       leveraging the existing global namespace and DNSSEC [RFC4033]
+       for integrity, with an HTTPS fallback for domains that do
+       not deploy DNSSEC.
+
+   (e) Incrementally deployable: UASI can coexist with and
+       complement existing authentication mechanisms (DKIM, mTLS,
+       HTTP Signatures).  It does not require flag-day adoption.
+
+   (f) Default-on simplicity: The framework is designed to be simple
+       enough that platform and library implementors can enable it
+       by default, shifting the paradigm from opt-in authentication
+       to opt-out.
+
+   (g) Minimal new primitives: UASI reuses existing cryptographic
+       algorithms, DNS record types, proven design patterns, and
+       existing signing standards.  Novelty is in composition, not
+       invention.
+
+1.4.  Scope
+
+   This document defines:
+
+   o  The UASI identity model and namespace
+   o  The trust model with three trust tiers
+   o  Key publication via DNS and .well-known HTTPS endpoint
+   o  The key discovery procedure
+   o  Protocol adapters for SMTP, HTTP, MQTT, CoAP, and WebSocket
+   o  The native signature format for protocols without existing
+      signing standards
+   o  The unified verification procedure
+   o  The policy evaluation framework
+   o  Migration guidance for environments with existing
+      authentication mechanisms
+
+   This document does NOT define:
+
+   o  End-to-end encryption (UASI authenticates the sender; it does
+      not encrypt the payload)
+   o  Authorization or access control (UASI establishes identity;
+      what you do with that identity is out of scope)
+   o  Human identity (UASI authenticates domains and services, not
+      individual humans)
+   o  Constrained device symmetric authentication (deferred to a
+      companion document, draft-uasi-constrained)
+
+
+2.  Terminology
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL
+   NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED",
+   "MAY", and "OPTIONAL" in this document are to be interpreted as
+   described in BCP 14 [RFC2119] [RFC8174] when, and only when,
+   they appear in all capitals, as shown here.
+
+   Sender Domain:
+      The DNS domain name that a sending entity claims as its
+      identity.  This is the root of the UASI trust anchor.
+
+   UASI Identity (UID):
+      A structured identifier of the form <selector>._uasi.<domain>
+      that uniquely identifies a sending entity or class of sending
+      entities within a domain.
+
+   Selector:
+      A label that allows a domain to publish multiple UASI keys,
+      enabling key rotation, per-service keys, and delegation to
+      third parties.
+
+   Protocol Adapter:
+      A specification of how UASI identity, signing, and
+      verification are mapped into a specific communication protocol.
+      Adapters fall into two categories: profiling adapters (which
+      profile an existing signing standard, e.g., RFC 9421 for HTTP)
+      and native adapters (which define UASI-specific signing for
+      protocols without an existing standard, e.g., MQTT).
+
+   Trust Tier:
+      The level of assurance associated with a key discovery result.
+      UASI defines three trust tiers: dnssec-verified, https-
+      verified, and dns-unsigned.  See Section 5.
+
+   Assertion:
+      A cryptographic signature over a canonical representation of
+      the message or event, produced by the sender using the private
+      key corresponding to a published UASI record.  For profiling
+      adapters, the assertion is produced using the profiled
+      standard's signing mechanism.
+
+   Verifier:
+      Any entity that receives a UASI-signed message and performs
+      the unified verification procedure defined in Section 10.
+
+   Policy Record:
+      A DNS TXT record under _uasi-policy.<domain> that declares
+      the sender domain's authentication policy -- analogous to
+      DMARC policy for email, but generalized across protocols.
+
+   Nonce:
+      A unique, non-repeating value included in a signature to
+      enable intra-protocol replay detection by the receiver.
+
+   .well-known Endpoint:
+      The HTTPS endpoint at /.well-known/uasi-keys/<selector>
+      that serves UASI public keys as a fallback when DNS is
+      unavailable.  See Section 7.3.
+
+
+3.  Problem Statement
+
+3.1.  The Fragmentation Problem
+
+   The current landscape of sender authentication on the Internet
+   can be characterized as a patchwork of protocol-specific
+   solutions, each developed independently and each with its own
+   identity model, key management approach, and policy semantics.
+
+   Consider an organization (example.com) that operates:
+
+   o  An email system requiring SPF, DKIM, and DMARC
+   o  A REST API sending webhook callbacks
+   o  An IoT fleet publishing MQTT telemetry
+   o  A real-time service using WebSocket connections
+   o  A microservice mesh using gRPC
+
+   Today, this organization must configure and maintain five or more
+   completely separate authentication systems.  Each has its own:
+
+   o  Key generation and rotation procedures
+   o  DNS records or certificate infrastructure
+   o  Signature algorithm negotiation
+   o  Verification libraries
+   o  Failure handling and reporting
+
+   This fragmentation imposes costs at every level:
+
+   o  Operational complexity: Security teams must be expert in
+      multiple unrelated authentication systems.
+
+   o  Inconsistent coverage: Organizations typically secure their
+      most visible protocol (email) and leave others unprotected.
+
+   o  Reinvention: Every new protocol reinvents sender
+      authentication, usually starting from shared secrets and
+      only later (if ever) migrating to cryptographic identity.
+
+   o  Audit difficulty: Answering "can we verify the sender of
+      every inbound communication?" requires protocol-by-protocol
+      analysis.
+
+3.2.  The Adoption Problem
+
+   Even within individual protocols, authentication adoption is
+   slow.  DMARC, specified in 2015, still sees incomplete adoption
+   a decade later.  The reasons are structural:
+
+   o  Complexity: Configuring DKIM alone requires generating keys,
+      publishing DNS records, configuring the MTA, and testing.
+      Adding SPF and DMARC adds further steps.
+
+   o  Fragility: Misconfigurations (e.g., SPF record exceeding
+      the 10-lookup limit) silently degrade authentication.
+
+   o  No universal default: Most software ships with
+      authentication disabled; administrators must actively enable
+      it.
+
+   o  Receiver-side cost: Verifiers must implement protocol-
+      specific verification logic for each mechanism.
+
+   UASI addresses the adoption problem by providing a single
+   identity and policy framework that, once integrated, works
+   across all protocol adapters.  This dramatically reduces
+   the per-protocol implementation cost and enables platform
+   vendors to ship with UASI enabled by default.
+
+3.3.  The IoT and Machine-to-Machine Gap
+
+   The fastest-growing category of Internet communication -- machine-
+   to-machine messaging via MQTT, CoAP, AMQP, and proprietary
+   protocols -- has the weakest sender authentication.  Many IoT
+   deployments rely on:
+
+   o  Pre-shared keys (PSK) with no rotation mechanism
+   o  Username/password over TLS with no domain-level identity
+   o  No authentication at all on constrained networks
+
+   The consequences include large-scale IoT botnets, unauthorized
+   command injection, and telemetry spoofing.  UASI's lightweight
+   native signing and DNS-based key distribution make it feasible
+   to deploy on devices that perform DNS resolution.  For
+   constrained devices that cannot perform public key cryptography,
+   a companion document (draft-uasi-constrained) will define a
+   symmetric authentication model.
+
+
+4.  Architecture Overview
+
+4.1.  Layered Design
+
+   UASI is structured in five layers:
+
+   +------------------------------------------------------------+
+   |                     Policy Layer                            |
+   |  (DNS _uasi-policy records: enforcement mode, reporting,    |
+   |   minimum trust tier)                                       |
+   +------------------------------------------------------------+
+   |              Unified Verification Engine                    |
+   |  (Protocol-independent: key discovery, trust tier           |
+   |   assignment, result production)                            |
+   +------------------------------------------------------------+
+   |                Key Discovery Layer                          |
+   |  (DNS _uasi records, .well-known/uasi-keys HTTPS fallback, |
+   |   trust tier determination)                                 |
+   +------------------------------------------------------------+
+   |                Protocol Adapter Layer                       |
+   |  (Per-protocol: HTTP profiles RFC 9421, SMTP wraps DKIM,   |
+   |   MQTT/CoAP/WebSocket use native UASI signing)             |
+   +------------------------------------------------------------+
+   |                  Identity Layer                             |
+   |  (<selector>._uasi.<domain> namespace, RFC 8552)            |
+   +------------------------------------------------------------+
+
+   This layering ensures that the core operations -- key discovery,
+   trust tier assignment, verification result production, and policy
+   evaluation -- are identical regardless of the transport protocol.
+   Only the adapter layer differs, and for protocols with existing
+   signing standards, the adapter is a thin profile rather than a
+   new signing mechanism.
+
+4.2.  Adapter Architecture
+
+   The protocol adapter model is the central architectural
+   contribution of this revision.  Each protocol gets an adapter
+   that maps UASI identity and verification into that protocol's
+   signing mechanism:
+
+   Profiling Adapters:
+      For protocols with existing signing standards, the adapter
+      defines a UASI profile of that standard.  The signing
+      mechanism is unchanged; UASI adds identity, key discovery,
+      and policy.
+
+      o  HTTP Adapter: profiles RFC 9421 (HTTP Message Signatures)
+      o  SMTP Adapter: wraps DKIM [RFC6376] with alignment rules
+
+   Native Adapters:
+      For protocols without existing signing standards, the adapter
+      defines a UASI-specific signing format and transport encoding.
+
+      o  MQTT v5 Adapter: UASI-Signature in User Properties
+      o  CoAP Adapter: UASI-Signature in a CoAP option
+      o  WebSocket Adapter: UASI-Signature as binary prefix
+
+4.3.  Data Flow
+
+   The end-to-end UASI flow is:
+
+   1. Key Publication (one-time setup per selector):
+      The sender domain generates a key pair and publishes the
+      public key as a DNS TXT record under
+      <selector>._uasi.<domain>.  Optionally, the key is also
+      served at .well-known/uasi-keys/<selector>.
+
+   2. Policy Publication (one-time setup per domain):
+      The sender domain publishes a policy record under
+      _uasi-policy.<domain> declaring its authentication posture,
+      including the minimum trust tier (mt= tag).
+
+   3. Signing (per message/event):
+      a. The sending application constructs the message payload
+         per the transport protocol.
+      b. The protocol adapter determines the signing mechanism:
+         - For HTTP: create an RFC 9421 signature with UASI-
+           profiled parameters.
+         - For SMTP: rely on existing DKIM signing (no additional
+           signature needed).
+         - For MQTT/CoAP/WebSocket: compute a native UASI
+           signature.
+      c. The adapter injects the signature into the message via
+         the protocol-appropriate carrier.
+
+   4. Verification (per message/event):
+      a. The protocol adapter extracts signature material from the
+         received message.
+      b. The adapter identifies the UASI identity (domain +
+         selector) from the signature metadata.
+      c. The unified verification engine discovers the key via
+         the key discovery procedure (Section 7.4), recording
+         the trust tier.
+      d. The adapter verifies the signature using the protocol-
+         appropriate mechanism.
+      e. The verification engine checks replay (if nonce present)
+         and expiry.
+      f. The engine produces a structured result including status,
+         trust tier, protocol, and identity.
+      g. The engine evaluates the result against the domain's
+         policy record, including the minimum trust tier.
+
+
+5.  Trust Model
+
+   UASI's trust model supports three tiers of key discovery
+   assurance.  This graduated model allows UASI to provide
+   meaningful security today (without universal DNSSEC deployment)
+   while offering a clear upgrade path to stronger assurance.
+
+5.1.  Trust Tiers
+
+   dnssec-verified:
+      The key was retrieved via a DNSSEC-validated DNS response.
+      The verifier has cryptographic assurance that the key record
+      is authentic and has not been tampered with.  This is the
+      strongest trust tier.
+
+      This tier provides security equivalent to DANE [RFC7671] --
+      the DNS infrastructure itself vouches for the key material.
+
+   https-verified:
+      The key was retrieved via the .well-known/uasi-keys HTTPS
+      endpoint (Section 7.3).  The verifier relies on the WebPKI
+      (TLS certificate chain) to authenticate the domain serving
+      the key.
+
+      This tier provides security equivalent to any HTTPS-based
+      key distribution mechanism.  It is weaker than dnssec-
+      verified (it depends on the CA ecosystem) but provides
+      meaningful, widely deployable authentication.
+
+   dns-unsigned:
+      The key was retrieved via an unsigned (non-DNSSEC) DNS
+      response.  The verifier has no cryptographic assurance of
+      the key's authenticity beyond the operational integrity of
+      the DNS infrastructure.
+
+      This tier provides security equivalent to how DKIM operates
+      today for the vast majority of domains.  It is the weakest
+      tier but is strictly better than no authentication.
+
+5.2.  Trust Tier Assignment
+
+   Trust tier assignment occurs during the key discovery procedure
+   (Section 7.4) and is recorded in the verification result.  The
+   assignment rules are:
+
+   o  If the DNS response is DNSSEC-validated (secure): trust tier
+      is dnssec-verified.
+
+   o  If the DNS response is unsigned (insecure): trust tier is
+      dns-unsigned.
+
+   o  If the key was retrieved via .well-known HTTPS fallback:
+      trust tier is https-verified.
+
+   o  If the key was added locally for testing (via an
+      implementation-specific mechanism such as add_key()): trust
+      tier is local.  The local tier is for development and testing
+      only; it MUST NOT satisfy any mt= policy requirement.
+
+5.3.  Minimum Trust Policy
+
+   Domain operators control the minimum acceptable trust tier via
+   the mt= tag in their policy record (Section 11.1).  This puts
+   the DNSSEC deployment question in the operator's hands:
+
+   o  mt=dnssec: Only dnssec-verified keys satisfy policy.
+      Security-conscious operators who deploy DNSSEC use this to
+      prevent downgrade to weaker tiers.
+
+   o  mt=https: Keys from dnssec-verified or https-verified
+      sources satisfy policy.  This is the DEFAULT if mt= is not
+      specified.
+
+   o  mt=any: All trust tiers satisfy policy, including
+      dns-unsigned.  This provides the lowest barrier to
+      deployment.
+
+   Verification results that do not meet the minimum trust tier
+   are treated as policy failures (equivalent to fail for policy
+   evaluation purposes, regardless of the cryptographic
+   verification status).
+
+5.4.  DNSSEC Validation States
+
+   When a verifier performs DNSSEC validation on a UASI key record
+   query, the response falls into one of three states, as defined
+   in [RFC4033]:
+
+   Secure:
+      The response has a valid DNSSEC signature chain to a trust
+      anchor.  Trust tier: dnssec-verified.
+
+      Action: Use the key, proceed with verification.
+
+   Insecure:
+      The domain does not deploy DNSSEC, or there is a provable
+      break in the chain of trust (e.g., an unsigned delegation).
+      Trust tier: dns-unsigned.
+
+      Action: Use the key.  The trust tier is recorded and
+      evaluated against mt= policy.
+
+   Bogus:
+      The DNSSEC signature is present but fails validation.  This
+      indicates either a misconfigured zone or an active attack
+      (e.g., DNS cache poisoning, BGP hijacking, on-path key
+      substitution).
+
+      Action: The verifier MUST NOT use the key from the bogus
+      response.  The verifier SHOULD fall back to the .well-known
+      endpoint (Section 7.3).  If the .well-known endpoint is also
+      unavailable, the result MUST be "temperror" (if the verifier
+      believes the condition may be transient) or "permerror" (if
+      the condition persists across multiple queries over a period
+      of at least 1 hour).
+
+      Verifiers SHOULD log bogus DNSSEC responses as security
+      events.  Persistent bogus responses for a previously-secure
+      domain are a strong indicator of an active attack and
+      SHOULD trigger operator alerts.
+
+
+6.  Identity Model
+
+6.1.  UASI Identity (UID) Format
+
+   A UASI Identity is a DNS name of the following form:
+
+      <selector>._uasi.<domain>
+
+   Where:
+
+   o  <domain> is a fully qualified domain name (FQDN) under the
+      control of the sending entity.
+
+   o  <selector> is a DNS label chosen by the domain administrator.
+      Selectors allow a domain to publish multiple keys for
+      different purposes (e.g., per-service, per-environment,
+      key rotation).
+
+   o  "_uasi" is a fixed underscore-prefixed label that prevents
+      collision with existing DNS names, per [RFC8552].
+
+   Examples:
+
+      mail._uasi.example.com       (email signing key)
+      webhooks._uasi.example.com   (webhook signing key)
+      iot-fleet1._uasi.example.com (IoT device fleet key)
+      api-v2._uasi.example.com     (API signing key)
+
+6.2.  Selector Semantics
+
+   Selectors are opaque labels from the verifier's perspective.
+   Their internal structure and naming convention are a matter of
+   local policy for the sender domain.  However, the following
+   conventions are RECOMMENDED:
+
+   o  Use descriptive names that aid operational debugging
+      (e.g., "mail-2026q1" rather than "k1").
+
+   o  Include a rotation indicator (e.g., date or sequence number)
+      to facilitate key rollover.
+
+   o  Use separate selectors for separate services to enable
+      independent key management and least-privilege signing.
+
+6.3.  Delegation
+
+   A domain MAY delegate UASI signing authority to a third party
+   by publishing a CNAME record from the selector to a name
+   controlled by the delegate:
+
+      webhooks._uasi.example.com. CNAME webhooks._uasi.provider.net.
+
+   This allows SaaS providers, CDNs, and managed service operators
+   to sign on behalf of their customers without requiring access to
+   the customer's DNS zone beyond the initial CNAME setup -- a
+   pattern proven effective by DKIM delegation.
+
+6.4.  Wildcard Identities
+
+   Wildcard selectors (*._uasi.<domain>) are NOT RECOMMENDED due
+   to the difficulty of revoking individual keys and the security
+   implications of a single key compromise affecting all services.
+
+6.5.  Selector Management at Scale
+
+   Organizations operating large numbers of services (microservice
+   architectures, IoT fleets, multi-tenant SaaS platforms) may
+   accumulate hundreds or thousands of selectors.  This section
+   provides operational guidance for managing selectors at scale.
+
+6.5.1.  Selector Lifecycle
+
+   Each selector SHOULD follow a defined lifecycle:
+
+      Active:    Key is published, signing system uses this selector.
+      Draining:  New key published under new selector; old selector
+                 still resolves for in-flight message verification.
+                 Duration: at minimum, the old record's TTL plus the
+                 maximum expected message delivery delay.
+      Retired:   DNS record removed.  The selector label MAY be
+                 reused after a cooling-off period (RECOMMENDED:
+                 30 days minimum) to avoid confusion in log analysis.
+
+6.5.2.  Automation Patterns
+
+   Manual selector management does not scale beyond a handful of
+   services.  Implementations SHOULD support automated lifecycle
+   management:
+
+   o  Key generation and DNS publication via DNS API (e.g.,
+      RFC 2136 dynamic updates, or provider-specific APIs).
+
+   o  Selector naming conventions that encode creation date and
+      service identity (e.g., "webhooks-20260315-001") to enable
+      automated garbage collection of retired records.
+
+   o  Monitoring that alerts on selectors approaching key
+      expiration (the "x=" tag in the key record) or exceeding
+      a maximum age threshold.
+
+   Appendix C provides reference patterns for common deployment
+   architectures.
+
+6.5.3.  Shared Selectors
+
+   Where individual per-device selectors are infeasible (e.g., a
+   fleet of 10,000 IoT sensors), a shared fleet selector is
+   acceptable.  The trade-off is that key compromise affects the
+   entire fleet rather than a single device.  Organizations SHOULD
+   segment fleets into groups of manageable size (RECOMMENDED:
+   no more than 1,000 devices per selector) and use fleet-level
+   selectors (e.g., "fleet-a", "fleet-b") to limit blast radius.
+
+
+7.  Key Publication and Discovery
+
+7.1.  DNS Key Record
+
+   UASI public keys are published as DNS TXT records under the
+   UASI Identity name.  The record value is a semicolon-separated
+   list of tag=value pairs.
+
+   Required tags:
+
+      v=UASI1     ; Version (MUST be "UASI1" for this specification)
+      k=<alg>     ; Key algorithm (see Section 7.5)
+      p=<key>     ; Base64-encoded public key material
+
+   Optional tags:
+
+      t=<flags>   ; Flags (colon-separated):
+                  ;   "s" = this key is for signing only (not
+                  ;         encryption; default assumed)
+                  ;   "y" = testing mode (verifiers SHOULD NOT
+                  ;         reject based on this key)
+      h=<hash>    ; Acceptable hash algorithms (colon-separated)
+                  ;   Default: "sha256"
+      x=<expiry>  ; Key expiration as Unix timestamp.  Verifiers
+                  ;   MUST treat expired keys as invalid.
+      n=<notes>   ; Human-readable notes (no semantic meaning)
+
+   Example:
+
+      mail._uasi.example.com. 3600 IN TXT (
+         "v=UASI1; k=ed25519; "
+         "p=MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...; "
+         "x=1735689600; "
+         "n=Email signing key 2026-Q1" )
+
+7.1.1.  TTL Recommendations
+
+   The TTL of UASI key records directly affects both the DNS query
+   load generated by verifiers and the speed of key rotation.
+
+   The following TTL values are RECOMMENDED:
+
+      General use:          3600 seconds (1 hour)
+      High-frequency APIs:  86400 seconds (24 hours)
+      Key rotation period:  300 seconds (5 minutes), temporarily,
+                            during the Draining phase of key
+                            rotation (Section 6.5.1)
+
+   Verifiers MUST respect the TTL of cached key records and MUST
+   NOT query DNS more frequently than the TTL permits.  See
+   Section 10.5 for verifier-side caching guidance.
+
+7.2.  Policy Record
+
+   Domain-level UASI policy is published as a DNS TXT record
+   under _uasi-policy.<domain>.  The record value uses the same
+   tag=value syntax.
+
+   Required tags:
+
+      v=UASI1     ; Version
+      p=<policy>  ; Policy mode:
+                  ;   "none"    = no assertion about UASI usage;
+                  ;               informational only
+                  ;   "report"  = UASI is deployed; receivers
+                  ;               SHOULD verify and report but
+                  ;               SHOULD NOT reject
+                  ;   "enforce" = UASI is deployed; receivers
+                  ;               SHOULD reject unsigned or
+                  ;               failing messages
+
+   Optional tags:
+
+      rua=<uri>   ; Aggregate reporting URI
+                  ;   (mailto: or https: endpoint)
+      ruf=<uri>   ; Forensic/failure reporting URI
+      pct=<int>   ; Percentage of messages to which policy applies
+                  ;   (0-100; default 100).  Enables gradual rollout.
+      sp=<policy> ; Subdomain policy (overrides p= for subdomains)
+      b=<list>    ; Protocol bindings to which this policy applies
+                  ;   (colon-separated; e.g., "smtp:http:mqtt")
+                  ;   Default: all bindings
+      rl=<level>  ; Report granularity level (Section 11.2.1):
+                  ;   "d" = domain-only (most private)
+                  ;   "s" = selector-level (default)
+                  ;   "f" = full forensic detail
+      mt=<tier>   ; Minimum trust tier for pass (Section 5.3):
+                  ;   "dnssec" = only dnssec-verified
+                  ;   "https"  = dnssec-verified or https-verified
+                  ;              (DEFAULT)
+                  ;   "any"    = all tiers accepted
+      da=<mode>   ; DKIM alignment mode for the SMTP adapter
+                  ;   (Section 9.2):
+                  ;   "relaxed" = any DKIM selector under the
+                  ;               domain satisfies UASI policy
+                  ;               (DEFAULT)
+                  ;   "strict"  = DKIM selector name must match
+                  ;               UASI selector name
+
+   Example:
+
+      _uasi-policy.example.com. 3600 IN TXT (
+         "v=UASI1; p=enforce; mt=https; da=relaxed; "
+         "rua=mailto:uasi-reports@example.com; "
+         "b=smtp:http" )
+
+   This policy declares that example.com enforces UASI on SMTP
+   and HTTP traffic, requires at minimum HTTPS-level trust for key
+   discovery, uses relaxed DKIM alignment for SMTP, and sends
+   aggregate reports to the specified mailbox.
+
+   Per-protocol policy records:
+
+   Operators who want different policy settings per protocol MAY
+   publish per-protocol policy records using the format:
+
+      _uasi-policy._<context>.<domain>
+
+   For example:
+
+      _uasi-policy._smtp.example.com. 3600 IN TXT (
+         "v=UASI1; p=enforce; mt=any; da=strict" )
+
+      _uasi-policy._http.example.com. 3600 IN TXT (
+         "v=UASI1; p=enforce; mt=dnssec" )
+
+   If a per-protocol policy record exists, it takes precedence
+   over the base _uasi-policy record for that protocol.  If no
+   per-protocol record exists, the base record applies.
+
+7.3.  .well-known HTTPS Endpoint
+
+   To provide key discovery when DNS is unavailable (e.g., due to
+   resolver failures, network partitions, or deployment in
+   environments where DNS is unreliable), UASI defines an HTTPS-
+   based key retrieval endpoint.
+
+   URL format:
+
+      https://<domain>/.well-known/uasi-keys/<selector>
+
+   Response format (JSON):
+
+      {
+        "v": "UASI1",
+        "k": "ed25519",
+        "p": "<base64-encoded-public-key>"
+      }
+
+   The response MAY include additional fields corresponding to the
+   optional tags defined in Section 7.1 (e.g., "x" for expiry,
+   "t" for flags, "n" for notes).
+
+   Requirements:
+
+   o  The endpoint MUST be served over HTTPS with a valid TLS
+      certificate for <domain>.
+
+   o  The endpoint SHOULD set Cache-Control headers.  RECOMMENDED:
+      max-age=3600.
+
+   o  The endpoint MUST return 404 Not Found if the selector does
+      not exist.
+
+   o  The endpoint MUST return Content-Type: application/json.
+
+   o  Implementations SHOULD support HTTP conditional requests
+      (ETag / If-None-Match) for efficient cache revalidation.
+
+   Registration:
+
+   The ".well-known" URI suffix "uasi-keys" is registered per
+   [RFC8615].  See Section 14.7.
+
+7.4.  Key Discovery Procedure
+
+   DNS is the canonical source for UASI key material.  The
+   .well-known HTTPS endpoint is a fallback, not a co-equal path.
+   The discovery procedure is:
+
+   Step 1.  Query DNS for <selector>._uasi.<domain> TXT record.
+
+   Step 2.  If DNS returns a DNSSEC-validated (secure) response:
+            use the key, set trust_tier to "dnssec-verified".
+            Do NOT consult .well-known.  STOP.
+
+   Step 3.  If DNS returns an unsigned (insecure, non-DNSSEC)
+            response with a valid UASI key record: use the key,
+            set trust_tier to "dns-unsigned".  Do NOT consult
+            .well-known.  STOP.
+
+            Rationale: DNS and .well-known returning different
+            keys would create ambiguity.  DNS wins as the
+            canonical source.
+
+   Step 4.  If DNS returns a bogus DNSSEC response, or if DNS
+            fails entirely (SERVFAIL, timeout, NXDOMAIN): fall
+            back to .well-known/uasi-keys/<selector> over HTTPS.
+            If the HTTPS endpoint returns a valid key, set
+            trust_tier to "https-verified".  STOP.
+
+   Step 5.  If both DNS and .well-known fail: return result
+            "temperror" (for transient DNS failures such as
+            SERVFAIL or timeout) or "permerror" (for NXDOMAIN
+            combined with HTTP 404).
+
+   Conflict resolution:
+
+   DNS is authoritative.  .well-known is only consulted when DNS
+   is unavailable.  This prevents downgrade attacks where an
+   adversary blocks DNS to force verifiers to a potentially
+   compromised web server.  See Section 13.2 for a detailed
+   analysis of this attack.
+
+7.5.  Supported Algorithms
+
+   UASI implementations MUST support the following algorithms:
+
+      Ed25519  [RFC8032]  -- REQUIRED (mandatory to implement)
+      ECDSA P-256 (ES256) -- RECOMMENDED
+
+   Ed25519 is designated as the mandatory-to-implement algorithm
+   due to its small key size (32 bytes public key, 64 bytes
+   signature -- both suitable for DNS TXT records and constrained
+   protocol fields), fast verification, and resistance to
+   implementation pitfalls.
+
+   RSA (RS256) is intentionally deferred from this version of the
+   specification.  While RSA has broad deployment, its 256-byte
+   signatures conflict with the compact format goals for CoAP and
+   MQTT native adapters, and adding it increases verifier
+   complexity without a demonstrated interoperability requirement.
+   RSA support may be added in a future revision if demand
+   warrants.
+
+   Implementations MUST NOT support curves below 256 bits for
+   ECDSA.
+
+7.6.  Key Rotation
+
+   Key rotation is accomplished by:
+
+   1. Publishing a new key under a new selector.
+   2. Configuring the signing system to use the new selector.
+   3. Allowing sufficient time for DNS caches to expire the old
+      key record (at minimum, the old record's TTL plus the
+      maximum expected message delivery delay for the protocol).
+   4. Removing the old key record.
+   5. If using .well-known, updating the HTTPS endpoint for both
+      the old selector (remove) and new selector (add)
+      simultaneously with the DNS changes.
+
+   During the transition period, both keys are valid, and verifiers
+   will accept signatures from either.  The selector mechanism
+   ensures that each signature unambiguously identifies which key
+   to use, avoiding the ambiguity problems that arise with key
+   rollover in other systems.
+
+   Key re-fetch on failure:
+
+   Verifiers that have a cached key which no longer validates a
+   signature SHOULD re-fetch the key (bypassing cache) exactly
+   once before returning "fail".  This handles the case where a
+   key has been rotated but the verifier's cache has not yet
+   expired.  This mirrors DKIM's key rotation behavior.
+
+   For automated rotation guidance, see Section 6.5.
+
+
+8.  Signature Format (Native Adapters)
+
+   This section defines the signature format used by native
+   adapters (MQTT, CoAP, WebSocket).  Profiling adapters (HTTP,
+   SMTP) use their respective profiled standard's signature
+   format; see Section 9.
+
+8.1.  UASI-Signature Field
+
+   The UASI-Signature field is the carrier for UASI assertions
+   in native adapters.  Its syntax is a semicolon-separated list
+   of tag=value pairs, conceptually similar to a DKIM-Signature
+   header but generalized for any protocol.
+
+   Required tags:
+
+      v=1          ; Signature version
+      a=<alg>      ; Signing algorithm (e.g., "ed25519-sha256")
+      d=<domain>   ; Sender domain (the "d=" domain)
+      s=<selector> ; Selector
+      t=<ts>       ; Signature timestamp (Unix seconds)
+      bh=<hash>    ; Base64-encoded hash of the canonicalized
+                   ; message body/payload
+      b=<sig>      ; Base64-encoded signature value
+      c=<canon>    ; Canonicalization method (Section 8.2)
+      z=<context>  ; Protocol context tag (e.g., "mqtt5", "coap",
+                   ;   "websocket").  REQUIRED.  Prevents cross-
+                   ;   protocol replay.  (Section 8.4)
+
+   Optional tags:
+
+      x=<expiry>   ; Signature expiration (Unix seconds)
+      h=<fields>   ; Colon-separated list of signed header/metadata
+                   ; field names (protocol-binding specific)
+      q=<method>   ; Query method for key retrieval
+                   ;   "dns/txt" (default)
+                   ;   "dns/txt+https/wk" (DNS with .well-known
+                   ;   fallback; see Section 7.4)
+      l=<length>   ; Body length limit (number of octets signed)
+      n=<nonce>    ; Unique nonce for intra-protocol replay
+                   ;   detection (Section 8.5).  RECOMMENDED for
+                   ;   WebSocket per-message signing.
+
+   Example (line breaks for display; actual value is continuous):
+
+      v=1; a=ed25519-sha256; d=sensor.example.com; s=fleet-a;
+      t=1710500000; x=1710503600; z=mqtt5;
+      h=@topic:@qos:@content-type;
+      bh=base64encodedHash==;
+      b=base64encodedSignature==;
+      c=simple
+
+   Note: The "z=" tag is REQUIRED for native adapters.  For the
+   HTTP adapter, cross-protocol binding is achieved via the "tag"
+   parameter in RFC 9421's Signature-Input (set to "uasi").  For
+   the SMTP adapter, cross-protocol replay prevention is inherent
+   in DKIM's structural binding to email headers.
+
+8.2.  Canonicalization
+
+   To ensure that signatures survive transport-layer
+   transformations (e.g., header reordering, whitespace
+   normalization), UASI defines three canonicalization modes:
+
+   Simple:
+      The signable content is used as-is, with no normalization.
+      This mode is suitable for binary protocols (MQTT, CoAP)
+      where message content is unlikely to be transformed in
+      transit.
+
+   Relaxed:
+      o  Header/metadata field names are lowercased.
+      o  Header/metadata field values have leading and trailing
+         whitespace removed, and internal sequences of whitespace
+         collapsed to a single space.
+      o  Empty lines at the end of the body are removed.
+      o  Line endings are normalized to CRLF.
+
+      This mode is applicable to native adapters that operate
+      over text-based transports.
+
+   Strict:
+      o  All rules of "relaxed" mode apply.
+      o  Additionally, ONLY fields listed in "h=" are considered
+         part of the signing input.  If a field listed in "h=" is
+         absent from the message, it is included as an empty value
+         (field_name ":" SP "" CRLF).  This prevents an attacker
+         from adding a signed field that wasn't present at signing
+         time.
+      o  The body hash covers the EXACT byte sequence of the body
+         after transfer-encoding removal, with no further
+         normalization.
+
+      This mode is suitable for native adapters where intermediary
+      modification is possible (e.g., WebSocket proxies).
+
+   The choice of canonicalization mode is declared in the "c=" tag
+   of the UASI-Signature field.
+
+8.2.1.  Canonicalization Selection Guidance
+
+   The following table summarizes the RECOMMENDED canonicalization
+   mode for each native adapter:
+
+      +------------+-------------+----------------------------------+
+      | Protocol   | RECOMMENDED | Rationale                        |
+      +------------+-------------+----------------------------------+
+      | MQTT v5    | simple      | Brokers preserve payload         |
+      | CoAP       | simple      | No intermediary modification     |
+      | WebSocket  | strict      | Proxy traversal possible         |
+      +------------+-------------+----------------------------------+
+
+   Note: The HTTP and SMTP adapters use their profiled standard's
+   canonicalization (RFC 9421's component coverage for HTTP; DKIM's
+   canonicalization for SMTP) rather than the modes defined here.
+
+8.3.  Canonical Signing Input (Native Adapters)
+
+   The signing input for native adapters is constructed as follows:
+
+   1. For each field name listed in "h=", in the order listed:
+      a. Apply canonicalization to the field name and value.
+      b. If the field is absent from the message and c=strict,
+         use an empty value.
+      c. Concatenate: canonicalized_name ":" SP canonicalized_value
+         CRLF
+
+   2. Concatenate the protocol context: "z:" SP context_value CRLF
+
+   3. If a nonce is present: "n:" SP nonce_value CRLF
+
+   4. Concatenate the body hash: "bh:" SP body_hash_value CRLF
+
+   5. Concatenate the UASI-Signature field value itself, with the
+      "b=" tag value empty (i.e., "b=;"), canonicalized.
+
+   6. The signature is computed over the concatenation from steps
+      1-5.
+
+   This construction ensures that both selected metadata fields
+   and the message body are covered, and that the signature is
+   self-referential (signing its own parameters prevents
+   parameter substitution attacks).
+
+8.4.  Preventing Cross-Protocol Replay
+
+   Cross-protocol replay prevention is achieved differently for
+   each adapter type:
+
+   Native adapters (MQTT, CoAP, WebSocket):
+      The "z=" (protocol context) tag is REQUIRED and is always
+      included in the signing input.  This ensures that a valid
+      UASI signature for an MQTT message cannot be replayed as
+      a CoAP message, even if the payload is identical.  Verifiers
+      MUST reject signatures where the "z=" value does not match
+      the protocol over which the message was received.
+
+   HTTP adapter (RFC 9421 profile):
+      The "tag" parameter in RFC 9421's Signature-Input is set to
+      "uasi".  Since the tag is included in the signature base
+      (per RFC 9421 Section 2.5), it provides equivalent cross-
+      protocol binding.
+
+   SMTP adapter (DKIM wrapper):
+      Cross-protocol replay prevention is inherent.  A DKIM
+      signature is structurally bound to email headers (From, To,
+      Subject, etc.) and cannot be transplanted into an HTTP or
+      MQTT context.
+
+8.5.  Nonce-Based Intra-Protocol Replay Detection
+
+   The cross-protocol replay mechanisms described in Section 8.4
+   do not prevent intra-protocol replay -- re-sending an identical,
+   validly signed message to the same receiver within the same
+   protocol.
+
+   Replay protection is fundamentally a stateful problem: the
+   receiver must remember what it has already seen.  UASI provides
+   an optional "n=" (nonce) tag in native adapter signatures to
+   support this use case without mandating statefulness for all
+   deployments.
+
+   For the HTTP adapter, the "nonce" parameter defined in
+   RFC 9421 Signature-Input provides equivalent functionality.
+
+8.5.1.  Nonce Generation
+
+   When included, the "n=" value MUST be unique per signature.
+   Acceptable generation strategies include:
+
+   o  UUIDv4 (RECOMMENDED for general use)
+   o  UUIDv7 or ULID (RECOMMENDED when time-ordering aids
+      debugging)
+   o  Cryptographically random hex string (minimum 128 bits)
+   o  Monotonically increasing counter per selector (acceptable
+      for single-signer deployments)
+
+   The nonce value MUST NOT exceed 128 characters and MUST consist
+   only of alphanumeric characters and hyphens.
+
+8.5.2.  Nonce Verification
+
+   When a signature contains a nonce (native adapter "n=" or
+   HTTP adapter "nonce" parameter), verifiers SHOULD maintain a
+   nonce cache indexed by (domain, selector, nonce) tuples:
+
+   1. After successful signature verification, check whether the
+      (domain, selector, nonce) tuple exists in the cache.
+   2. If it exists, return result = "fail" (replay detected).
+   3. If it does not exist, add the tuple to the cache with a
+      TTL equal to the signature's validity window (x= minus t=,
+      or a configured maximum if x= is absent).
+
+   The nonce cache MAY be bounded by size.  When the cache is full,
+   the oldest entries SHOULD be evicted.  Eviction of unexpired
+   entries weakens replay protection; operators should size the
+   cache according to their traffic volume and risk tolerance.
+
+8.5.2.1.  Cache Saturation and Forced Eviction
+
+   An attacker who can generate valid signed messages (e.g., a
+   compromised sender, or a legitimate sender whose messages are
+   observed and collected) can flood a verifier with messages
+   carrying unique nonces, forcing the nonce cache to evict
+   legitimate entries.  Once a legitimate nonce is evicted, the
+   attacker can replay the corresponding message.
+
+   This is a fundamental trade-off: unbounded caches are vulnerable
+   to memory exhaustion; bounded caches are vulnerable to forced
+   eviction.  Verifiers MUST choose a strategy appropriate to their
+   threat model:
+
+   Fail-Closed (High Security):
+
+      When the nonce cache reaches its configured maximum size,
+      the verifier rejects all new messages carrying nonces
+      (result = "temperror") until existing entries expire
+      naturally.  This prevents forced-eviction replays but
+      introduces a denial-of-service risk: an attacker can cause
+      legitimate traffic to be rejected by filling the cache.
+
+      This strategy is RECOMMENDED for:
+      o  Financial transaction webhooks
+      o  Any endpoint where replay has irreversible consequences
+
+   Fail-Open (High Availability):
+
+      When the nonce cache reaches its configured maximum size,
+      the verifier evicts the oldest unexpired entries to make
+      room.  The verifier SHOULD emit a security alert (log entry,
+      monitoring event) indicating that the replay protection
+      window has been compromised by volume.
+
+      This strategy is RECOMMENDED for:
+      o  General-purpose webhook receivers
+      o  Endpoints where occasional replay is tolerable and
+         availability is prioritized
+
+   Implementation guidance:
+
+   o  Verifiers SHOULD use a TTL-aware cache where entries expire
+      automatically based on the signature validity window
+      (x= minus t=).  This minimizes the need for forced eviction
+      under normal traffic patterns.
+
+   o  For high-volume endpoints, a distributed, TTL-aware cache
+      shared across multiple verifier instances reduces per-
+      instance memory pressure and provides consistent nonce
+      checking across a load-balanced deployment.
+
+   o  Verifiers SHOULD monitor cache utilization and alert when
+      utilization exceeds 80% of the configured maximum, as this
+      may indicate either a traffic spike or an eviction attack.
+
+   o  The configured maximum cache size SHOULD be at least 10x
+      the expected peak message rate multiplied by the maximum
+      signature validity window.  For example, an endpoint
+      receiving 1,000 messages/second with a 300-second validity
+      window should configure a cache of at least 3,000,000
+      entries.
+
+8.5.3.  When to Use Nonces
+
+   The "n=" tag or equivalent mechanism is RECOMMENDED for:
+   o  HTTP webhook delivery (where replay can trigger duplicate
+      side effects)
+   o  WebSocket per-message signing
+   o  Any protocol where the receiver is stateful and replay has
+      business-logic consequences
+
+   The nonce mechanism is NOT RECOMMENDED for:
+   o  SMTP (email has its own Message-ID-based deduplication)
+   o  IoT telemetry (stateless, idempotent sensor readings)
+   o  High-frequency, low-latency streams where nonce cache
+      overhead is prohibitive
+
+   Signers MUST NOT assume that receivers enforce nonce uniqueness.
+   The nonce mechanism is cooperative: it enables replay detection
+   for receivers that implement it, but does not guarantee it.
+
+
+9.  Protocol Adapters
+
+   This section defines the five protocol adapters.  Each adapter
+   specifies how UASI identity, signing, and verification are
+   mapped into a specific communication protocol.
+
+9.1.  HTTP Adapter -- Profiles RFC 9421
+
+   The HTTP adapter does not define a new signing format.  Instead,
+   it defines a profile of HTTP Message Signatures [RFC9421] with
+   UASI-specific parameters for key discovery and identity.
+
+9.1.1.  Profile Parameters
+
+   The following RFC 9421 parameters are constrained by the UASI
+   HTTP profile:
+
+   keyid:
+      The "keyid" parameter in the Signature-Input field MUST be
+      set to the full UASI Identity:
+
+         <selector>._uasi.<domain>
+
+      Example: "webhooks._uasi.sender.example.com"
+
+      The verifier parses the selector and domain from this string
+      by splitting on "._uasi." -- the portion before "._uasi." is
+      the selector, and the portion after is the domain.
+
+   alg:
+      The "alg" parameter MUST be set to "ed25519" or another
+      algorithm registered in the UASI algorithm registry
+      (Section 14.3).
+
+   tag:
+      The "tag" parameter MUST be set to "uasi".  This allows
+      co-existence with non-UASI HTTP Message Signatures on the
+      same message.  Verifiers looking for UASI signatures MUST
+      filter for signatures with tag="uasi".
+
+   created:
+      The "created" parameter SHOULD be included.  It corresponds
+      to the signature timestamp.
+
+   expires:
+      The "expires" parameter SHOULD be included for webhook use
+      cases.  RECOMMENDED: 300 seconds after "created".
+
+   nonce:
+      The "nonce" parameter SHOULD be included for webhook use
+      cases to enable intra-protocol replay detection.
+
+9.1.2.  Required Covered Components
+
+   For webhook and API callback use cases, the following covered
+   components are REQUIRED in the UASI HTTP profile:
+
+      @method
+      @authority
+      @path
+      content-type (when body is present)
+      content-digest (when body is present; see Section 9.1.3)
+
+   Additional application-specific headers (e.g., x-webhook-event,
+   x-request-id) MAY be included.
+
+   MUST NOT sign list:
+
+   The following HTTP headers MUST NOT be included in covered
+   components because they are routinely modified by intermediaries:
+
+      content-length, transfer-encoding, via, x-forwarded-for,
+      x-forwarded-proto, x-real-ip, connection, keep-alive,
+      proxy-authorization, te, trailer
+
+9.1.3.  Content-Digest Requirement
+
+   When an HTTP request has a body, the Content-Digest header
+   [RFC9530] MUST be present and MUST be included in the covered
+   components.  This provides body integrity protection within the
+   RFC 9421 framework.
+
+   For bodyless requests (e.g., GET callbacks), Content-Digest
+   is OPTIONAL and MAY be omitted from covered components.
+
+9.1.4.  Example HTTP Request
+
+   POST /webhook/orders HTTP/1.1
+   Host: receiver.example.org
+   Content-Type: application/json
+   Content-Digest: sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:
+   X-Webhook-Event: order.completed
+   X-Request-Id: req-789
+   Signature-Input: uasi-sig=("@method" "@authority" "@path"
+     "content-type" "content-digest" "x-webhook-event"
+     "x-request-id");keyid="webhooks._uasi.sender.example.com";
+     alg="ed25519";tag="uasi";created=1710500000;
+     expires=1710500300;nonce="550e8400-e29b-41d4"
+   Signature: uasi-sig=:BASE64SIGNATUREVALUE=:
+
+   {"order_id": "12345", "status": "shipped"}
+
+   Key resolution: The verifier extracts keyid=
+   "webhooks._uasi.sender.example.com", parses selector=
+   "webhooks" and domain="sender.example.com", then follows the
+   key discovery procedure (Section 7.4).
+
+9.1.5.  Intermediary Guidance
+
+   HTTP intermediaries (reverse proxies, CDNs, WAFs, API gateways,
+   load balancers) SHOULD preserve the Signature and Signature-Input
+   headers without modification.
+
+   Intermediaries MUST NOT:
+
+   o  Remove or modify the Signature or Signature-Input headers.
+   o  Modify the body content without being aware that doing so
+      will invalidate the Content-Digest and therefore the
+      signature.
+
+   Intermediaries MAY:
+
+   o  Add new headers (these will not be in the covered components
+      and therefore will not affect signature verification).
+   o  Re-sign the message with their own UASI signature if they
+      are an authorized intermediary (adding a second signature
+      label to Signature-Input and Signature).
+
+   When deploying UASI in environments with intermediaries, senders
+   SHOULD test signature survival through their actual delivery
+   path during the "monitor" phase (Section 12.2) before
+   progressing to enforcement.
+
+   If an intermediary must modify the body (e.g., content
+   transformation, compression), it SHOULD either:
+
+   (a) Strip the original Signature/Signature-Input and re-sign
+       with its own identity, or
+   (b) Verify the original signature before modification and
+       record the verification result in a trace header
+       (e.g., "UASI-Authentication-Results").
+
+9.1.6.  Volatile Header Parameters
+
+   Certain HTTP headers carry parameters that intermediaries
+   frequently add, remove, or normalize.  The most common case is
+   Content-Type, where a sender transmits:
+
+      Content-Type: application/json
+
+   and an intermediary rewrites it to:
+
+      Content-Type: application/json; charset=utf-8
+
+   This modification changes the byte representation of the header
+   value and will cause a signature failure if Content-Type is
+   included in the covered components.
+
+   Signer guidance:
+
+   Senders who include Content-Type (or any parameterized header)
+   in the covered components MUST pre-normalize the value before
+   signing.  Specifically:
+
+   o  Include all parameters that the sender intends to be present.
+      For example, sign "application/json; charset=utf-8" rather
+      than "application/json".
+
+   o  Lowercase the media type and all parameter names (per
+      RFC 2045, media types are case-insensitive).
+
+   o  Order parameters consistently (RECOMMENDED: alphabetical
+      by parameter name).
+
+   Headers with known volatility:
+
+   In addition to Content-Type, the following headers are known
+   to be subject to parameter modification by intermediaries and
+   SHOULD be treated with the same caution:
+
+      Accept, Accept-Encoding, Accept-Language, Cache-Control
+
+   Senders SHOULD prefer signing application-specific headers
+   (e.g., X-Webhook-Event, X-Request-Id) that intermediaries
+   have no reason to modify.
+
+9.2.  SMTP Adapter -- Wraps DKIM
+
+   The SMTP adapter does not replace DKIM signing or define a new
+   email signature format.  Instead, it provides alignment rules
+   between UASI identity and DKIM [RFC6376] selectors, mapping
+   DKIM verification results into UASI's unified result codes.
+   This gives SMTP the same policy and reporting framework as
+   other protocols without requiring a second signature.
+
+9.2.1.  DKIM Alignment Model
+
+   A domain that deploys UASI for SMTP publishes a UASI policy
+   record stating that DKIM signatures from its _domainkey
+   selectors satisfy UASI verification for the smtp context.
+
+   The alignment between DKIM selectors and UASI identity is
+   controlled by the "da=" (DKIM alignment) tag in the UASI
+   policy record:
+
+   da=relaxed (DEFAULT):
+      Any DKIM signature where the d= domain matches the UASI
+      policy domain (or is a subdomain of it) satisfies UASI
+      alignment.  The DKIM selector name is not constrained.
+
+      Example: A DKIM signature with d=example.com and
+      s=google-2026 satisfies UASI policy for example.com under
+      relaxed alignment.
+
+   da=strict:
+      The DKIM selector name (s=) must match the UASI selector
+      name for the binding to succeed.  This provides tighter
+      coupling between UASI and DKIM identities.
+
+      Example: A DKIM signature with d=example.com and
+      s=mail-2026q1 satisfies UASI policy only if the UASI
+      selector for the smtp binding is also mail-2026q1.
+
+9.2.2.  Verification Flow
+
+   The SMTP adapter verification flow is:
+
+   1. The receiving MTA performs standard DKIM verification per
+      [RFC6376].
+
+   2. The UASI verification engine queries the UASI policy record
+      for the DKIM d= domain.
+
+   3. If the UASI policy specifies the smtp protocol (via b= tag
+      or default "all"), the engine evaluates DKIM alignment:
+      a. Under da=relaxed: any passing DKIM signature with a
+         matching d= domain satisfies alignment.
+      b. Under da=strict: the DKIM s= must match the UASI selector.
+
+   4. The DKIM verification result is mapped to a UASI result:
+      - DKIM pass + alignment pass -> UASI pass
+      - DKIM pass + alignment fail -> UASI fail
+      - DKIM fail -> UASI fail
+      - DKIM none (no signature) -> UASI none
+      - DKIM temperror -> UASI temperror
+      - DKIM permerror -> UASI permerror
+
+   5. Trust tier is assigned based on the DKIM _domainkey DNS
+      lookup:
+      - DNSSEC-validated response -> dnssec-verified
+      - Unsigned response -> dns-unsigned
+
+      Note: The https-verified tier does not apply to the SMTP
+      adapter.  There is no .well-known fallback for DKIM keys,
+      as that would constitute a change to DKIM, which is out of
+      scope.
+
+   6. The structured verification result is produced and fed into
+      the unified policy engine (Section 11).
+
+9.2.3.  Cross-Protocol Replay
+
+   The SMTP adapter does not require a "z=" protocol context tag.
+   DKIM signatures are structurally bound to email headers (From,
+   To, Subject, Date, etc.) and cannot be transplanted into an
+   HTTP, MQTT, or other protocol context.  Cross-protocol replay
+   prevention is therefore inherent in the DKIM signature format.
+
+9.2.4.  Interaction with DMARC
+
+   UASI's SMTP adapter is complementary to DMARC [RFC7489].  A
+   domain MAY deploy both DMARC and UASI policy simultaneously.
+
+   o  DMARC evaluates alignment between DKIM/SPF identifiers and
+      the RFC 5322 From: domain.
+   o  UASI evaluates DKIM verification results against UASI policy
+      (including trust tier requirements).
+
+   The two policies are independent.  A message may pass DMARC but
+   fail UASI policy (e.g., if mt=dnssec and the DKIM key lookup
+   was not DNSSEC-validated), or vice versa.
+
+9.2.5.  Example
+
+   Domain configuration:
+
+      _uasi-policy.example.com. 3600 IN TXT (
+         "v=UASI1; p=enforce; da=relaxed; mt=any; "
+         "rua=mailto:uasi@example.com" )
+
+   Email flow:
+
+      DKIM-Signature: v=1; a=rsa-sha256; d=example.com;
+         s=google-2026; ... [standard DKIM signature]
+      From: ceo@example.com
+      To: board@example.org
+      Subject: Q1 Results
+
+   UASI evaluation:
+   - DKIM d=example.com matches UASI policy domain
+   - da=relaxed: DKIM s=google-2026 is accepted (any selector)
+   - DKIM verification: pass
+   - Trust tier: dns-unsigned (DKIM key lookup not DNSSEC-signed)
+   - mt=any: dns-unsigned is accepted
+   - UASI result: pass, trust_tier=dns-unsigned, protocol=smtp,
+     identity=google-2026._uasi.example.com
+
+9.3.  MQTT v5 Adapter -- UASI Native Signing
+
+   Context tag: z=mqtt5
+
+   No existing message-level signing standard exists for MQTT.
+   UASI defines native signing for MQTT v5.
+
+9.3.1.  Placement
+
+   The UASI-Signature is placed as an MQTT v5 User Property with
+   the name "UASI-Signature" on the PUBLISH packet.
+
+9.3.2.  Signable Fields
+
+   The following MQTT properties are signable using symbolic names:
+
+      @topic          -- the PUBLISH topic name
+      @qos            -- the QoS level
+      @retain         -- the retain flag (0 or 1)
+      @content-type   -- the Content Type property (if present)
+      @response-topic -- the Response Topic property (if present)
+      @correlation-data -- the Correlation Data property
+                          (base64-encoded, if present)
+
+   Additional User Properties MAY be included by name.
+
+9.3.3.  Canonicalization
+
+   "simple" is RECOMMENDED.  MQTT brokers generally do not modify
+   packet contents.
+
+9.3.4.  Body
+
+   The body hash covers the Application Message (payload) of the
+   PUBLISH packet.
+
+9.3.5.  Example
+
+   MQTT v5 PUBLISH User Properties:
+
+      UASI-Signature: v=1; a=ed25519-sha256;
+         d=sensor-fleet.example.com; s=iot-fleet1;
+         t=1710500000; z=mqtt5; c=simple;
+         h=@topic:@qos:@content-type;
+         bh=payloadHash==;
+         b=SIGVALUEHERE==
+
+9.4.  CoAP Adapter -- UASI Native Signing
+
+   Context tag: z=coap
+
+   No existing message-level signing standard exists for CoAP.
+   UASI defines native signing for CoAP.
+
+9.4.1.  Placement
+
+   The UASI-Signature is placed as a CoAP Option.  A new option
+   number is requested from IANA (see Section 14).
+
+9.4.2.  Signable Fields
+
+   The following CoAP fields are signable:
+
+      @uri-path       -- the Uri-Path option value(s)
+      @uri-host       -- the Uri-Host option value
+      @content-format -- the Content-Format option value
+
+9.4.3.  Canonicalization
+
+   "simple" is RECOMMENDED.
+
+9.4.4.  Body
+
+   The body hash covers the CoAP payload.
+
+9.4.5.  Compact Encoding
+
+   CoAP's constrained environment makes compact encoding
+   important.  The UASI-Signature CoAP option uses a compact
+   binary encoding rather than the text-based tag=value format:
+
+   Byte layout:
+
+      +--------+--------+--------+--------+
+      | Flags  | Sel Len| Domain | ...
+      | (1B)   | (1B)   | Len(1B)| Selector (variable)
+      +--------+--------+--------+--------+
+      | Domain (variable)       | Timestamp (4B, big-endian)
+      +--------+--------+--------+--------+
+      | Expiry (4B, optional)   | Body Hash (32B, SHA-256)
+      +--------+--------+--------+--------+
+      | Signature (64B, Ed25519)          |
+      +--------+--------+--------+--------+
+
+   The Flags byte encodes:
+      Bits 0-1: Algorithm (00=ed25519, 01=es256)
+      Bits 2-3: Canonicalization (00=simple, 01=relaxed, 10=strict)
+      Bit 4:    Expiry present (1=yes)
+      Bit 5:    Nonce present (1=yes)
+      Bits 6-7: Reserved
+
+   This compact encoding produces a UASI-Signature option of
+   approximately 110-140 bytes for Ed25519, compared to 200+
+   bytes for the text format.
+
+9.5.  WebSocket Adapter -- UASI Native Signing
+
+   Context tag: z=websocket
+
+9.5.1.  Handshake Authentication
+
+   UASI authentication for the WebSocket opening handshake uses
+   the HTTP adapter (Section 9.1) applied to the HTTP Upgrade
+   request.  This authenticates the initial connection
+   establishment.
+
+9.5.2.  Per-Message Signing
+
+   For per-message authentication after the handshake, the UASI-
+   Signature is carried as a binary prefix in each WebSocket
+   message:
+
+      +------------------+-------------------+------------------+
+      | Sig Length (2B)  | UASI-Signature    | Payload          |
+      | big-endian       | (variable length) | (remaining bytes)|
+      +------------------+-------------------+------------------+
+
+   The first 2 bytes encode the length of the UASI-Signature in
+   bytes (big-endian unsigned 16-bit integer).  The UASI-Signature
+   follows in its text-based tag=value format (as defined in
+   Section 8.1).  The remaining bytes are the application payload.
+
+   This binary prefix format:
+   o  Works for both text and binary WebSocket frames
+   o  Is more compact than a JSON envelope
+   o  Is unambiguous to parse (fixed-length prefix followed by
+      known-length signature followed by payload)
+
+   The body hash (bh=) covers the payload bytes (everything after
+   the signature).
+
+9.5.3.  Signable Fields
+
+      @origin    -- the WebSocket origin
+      @protocol  -- the negotiated subprotocol
+
+9.5.4.  Canonicalization
+
+   "simple" is RECOMMENDED for per-message signing.  The binary
+   prefix format preserves byte-exact payload integrity.
+
+9.5.5.  Nonce
+
+   The "n=" tag is RECOMMENDED for WebSocket per-message signing.
+   WebSocket connections are long-lived, and per-message replay
+   detection provides defense against an observer who captures
+   and re-injects messages.
+
+9.6.  Defining New Adapters
+
+   New protocol adapters can be defined in separate documents by
+   specifying:
+
+   1. Whether the adapter is a profiling adapter (profiles an
+      existing signing standard) or a native adapter (defines
+      UASI-specific signing).
+
+   2. For profiling adapters:
+      a. Which signing standard is profiled.
+      b. How the UASI identity maps to the profiled standard's
+         key identifier.
+      c. How cross-protocol replay is prevented (equivalent to
+         the "tag" parameter or structural binding).
+
+   3. For native adapters:
+      a. The value of the "z=" context tag (registered with IANA).
+      b. The placement of the UASI-Signature field.
+      c. The set of signable protocol-specific fields.
+      d. Any protocol-specific canonicalization rules.
+      e. How the body/payload hash input is determined.
+
+   4. Whether nonce-based replay detection is recommended.
+
+   5. How trust tier is determined for key discovery (e.g.,
+      whether .well-known fallback is applicable).
+
+   6. Intermediary behavior requirements (if applicable).
+
+
+10.  Unified Verification Procedure
+
+10.1.  Overview
+
+   Regardless of protocol, every UASI verification follows the
+   same abstract flow, producing the same structured result.
+   The adapter handles protocol-specific extraction and signature
+   verification; the unified engine handles key discovery, trust
+   tier assignment, replay checking, expiry, and result production.
+
+10.2.  Step-by-Step Procedure
+
+   1. EXTRACT signature material from the received message using
+      the appropriate protocol adapter:
+      - HTTP: extract Signature and Signature-Input with tag="uasi"
+      - SMTP: extract DKIM verification result
+      - MQTT: extract UASI-Signature User Property
+      - CoAP: extract UASI-Signature option
+      - WebSocket: extract binary prefix or handshake signature
+
+   2. IDENTIFY the UASI identity (domain + selector) from the
+      extracted signature material:
+      - HTTP: parse keyid from Signature-Input
+      - SMTP: use DKIM d= domain with UASI alignment rules
+      - Native adapters: parse d= and s= tags
+
+   3. DISCOVER KEY via the key discovery procedure (Section 7.4):
+      a. Query DNS for <selector>._uasi.<domain>.
+      b. Apply the discovery procedure steps 1-5.
+      c. Record the trust_tier.
+      d. For the SMTP adapter, the key is the DKIM _domainkey
+         record (already retrieved during DKIM verification).
+         Trust tier is assigned based on whether that DNS
+         response was DNSSEC-validated.
+
+   4. VERIFY SIGNATURE using the adapter-specific mechanism:
+      - HTTP: perform RFC 9421 signature verification
+      - SMTP: use the DKIM verification result (already computed)
+      - Native adapters: verify Ed25519/ES256 signature per
+        Section 8.3
+
+   5. CHECK REPLAY:
+      - If a nonce is present (native adapter "n=" tag or HTTP
+        adapter "nonce" parameter), check the nonce cache.
+      - If the nonce has been seen before, return status = "fail"
+        (replay detected).
+      - If the nonce is fresh, add it to the cache.
+
+   6. CHECK EXPIRY:
+      - If an expiry is present (native adapter "x=" tag or HTTP
+        adapter "expires" parameter) and the current time exceeds
+        the expiry, return status = "fail" (expired signature).
+
+   7. PRODUCE RESULT -- a structured result object:
+
+      {
+        "status": "pass" | "fail" | "none" | "temperror" |
+                  "permerror",
+        "trust_tier": "dnssec-verified" | "https-verified" |
+                      "dns-unsigned" | "local",
+        "protocol": "http" | "smtp" | "mqtt5" | "coap" |
+                    "websocket",
+        "identity": "<selector>._uasi.<domain>"
+      }
+
+   The verification result is the same data structure regardless
+   of which adapter was used.  One policy engine, one reporting
+   pipeline, five protocols.
+
+10.3.  Result Codes
+
+   The verification procedure produces one of the following results:
+
+      pass      -- Signature verified successfully.
+      fail      -- Signature verification failed (invalid signature,
+                  expired, body hash mismatch, replay detected,
+                  or DKIM alignment failure for SMTP adapter).
+      none      -- No signature was present, or no key record
+                  was found.  The message is unsigned.
+      permerror -- A permanent error occurred (e.g., malformed
+                  signature, unsupported algorithm, NXDOMAIN for
+                  key record combined with HTTP 404 for .well-known).
+      temperror -- A temporary error occurred (e.g., DNS timeout,
+                  SERVFAIL, bogus DNSSEC response).  The verifier
+                  SHOULD retry.
+
+10.4.  Multiple Signatures
+
+   A message MAY carry multiple signatures.
+
+   For the HTTP adapter, multiple Signature/Signature-Input labels
+   may be present (per RFC 9421).  Verifiers SHOULD evaluate all
+   signatures with tag="uasi" and make policy decisions based on
+   the aggregate result.
+
+   For native adapters, multiple UASI-Signature fields may be
+   present (e.g., one from the originator and one from an
+   intermediary).
+
+   A common pattern is:
+
+   o  The originating sender signs the message (first signature).
+   o  An authorized intermediary (e.g., an API gateway) verifies
+      the original signature, then adds its own signature attesting
+      to the verified provenance.
+
+   Verifiers receiving multiply-signed messages can choose to trust
+   the intermediary's signature (if they have a relationship with
+   the intermediary) or verify the original sender's signature
+   directly.
+
+10.5.  Verifier Caching
+
+   UASI verification requires DNS queries to retrieve key records
+   and policy records.  In high-frequency scenarios (e.g., API
+   webhooks at thousands of requests per second), naive per-message
+   DNS resolution would impose unacceptable latency and load.
+
+10.5.1.  Key Record Caching
+
+   Verifiers MUST cache UASI key records according to the DNS TTL
+   of the record.  A verifier that receives multiple messages from
+   the same (domain, selector) pair within a TTL window MUST reuse
+   the cached key without issuing additional DNS queries.
+
+   For .well-known responses, verifiers MUST respect the HTTP
+   Cache-Control headers.  If no Cache-Control header is present,
+   verifiers SHOULD cache the response for 3600 seconds.
+
+10.5.2.  Policy Record Caching
+
+   Verifiers SHOULD cache policy records independently of key
+   records.  Policy records typically change less frequently than
+   key records and may use longer TTLs.
+
+10.5.3.  Negative Caching
+
+   If a DNS query for a key record returns NXDOMAIN or NODATA, the
+   verifier SHOULD cache the negative result for the lesser of:
+
+   o  The SOA minimum TTL from the authoritative response, or
+   o  300 seconds (5 minutes)
+
+   This prevents repeated DNS queries for non-existent selectors,
+   which could be used as a denial-of-service vector against
+   the verifier's DNS resolver.
+
+   If a .well-known request returns HTTP 404, the verifier SHOULD
+   cache the negative result for the value of the Cache-Control
+   max-age header, or 300 seconds if no Cache-Control header is
+   present.
+
+10.5.4.  Cache Warming
+
+   For verifiers with a known set of sender domains (e.g., a
+   webhook receiver that has registered with specific SaaS
+   providers), pre-fetching key records at startup and refreshing
+   them periodically (at TTL intervals) is RECOMMENDED.  This
+   eliminates cold-start latency on the first message from each
+   sender.
+
+
+11.  Policy Layer
+
+11.1.  Policy Evaluation
+
+   After verification, the verifier queries the sender domain's
+   policy record at _uasi-policy.<domain> (or the per-protocol
+   record _uasi-policy._<context>.<domain> if it exists) and
+   evaluates the result against the policy.
+
+   Policy evaluation follows two checks:
+
+   Check 1 -- Trust tier:
+
+   If the verification result status is "pass", the verifier checks
+   whether the trust_tier meets the minimum required by the mt= tag.
+
+      +-------------------+----------+-----------+-------------+
+      | trust_tier        | mt=dnssec| mt=https  | mt=any      |
+      +-------------------+----------+-----------+-------------+
+      | dnssec-verified   | accept   | accept    | accept      |
+      | https-verified    | reject*  | accept    | accept      |
+      | dns-unsigned      | reject*  | reject*   | accept      |
+      +-------------------+----------+-----------+-------------+
+
+      * Treated as policy failure despite cryptographic pass.
+
+   Check 2 -- Verification status:
+
+      +-------------------+----------+----------+----------+
+      | Verification      | p=none   | p=report | p=enforce|
+      | Result            |          |          |          |
+      +-------------------+----------+----------+----------+
+      | pass (tier OK)    | accept   | accept   | accept   |
+      | pass (tier fail)  | accept   | accept*  | reject*  |
+      | fail              | accept   | accept*  | reject*  |
+      | none (unsigned)   | accept   | accept*  | reject*  |
+      | permerror         | accept   | accept*  | reject*  |
+      | temperror         | accept   | accept   | defer    |
+      +-------------------+----------+----------+----------+
+
+      * Subject to the pct= percentage.  If a random value (0-99)
+        is >= pct, treat as if policy were "none" for this message.
+
+      "accept" = deliver/process the message normally
+      "reject" = refuse the message (protocol-appropriate error)
+      "defer"  = temporarily refuse; request retry
+
+11.2.  Reporting
+
+   If rua= or ruf= is specified in the policy record, verifiers
+   SHOULD send reports:
+
+   Aggregate reports (rua=):
+      Periodic reports (RECOMMENDED: daily) summarizing UASI
+      verification results, analogous to DMARC aggregate reports.
+      Format: JSON, schema defined in a companion document
+      (draft-uasi-report-format).
+
+      Aggregate reports MUST include the trust_tier field for each
+      result, enabling domain operators to track the ratio of
+      dnssec-verified vs. https-verified vs. dns-unsigned
+      verifications.
+
+   Forensic reports (ruf=):
+      Per-failure reports containing details of individual
+      verification failures.  Due to privacy implications, forensic
+      reports are OPTIONAL and SHOULD be rate-limited.
+
+11.2.1.  Report Granularity (rl= Tag)
+
+   The UASI policy record MAY include an "rl=" (report level) tag
+   that controls the granularity of information included in
+   aggregate reports.  This enables senders to balance operational
+   visibility with privacy protection.
+
+   Values:
+
+      rl=d  (Domain):
+         Aggregate reports summarize results at the organizational
+         domain level only.  Individual selectors, message
+         timestamps, and source IP addresses are NOT included.
+         This is the most privacy-preserving option.
+
+         RECOMMENDED for: Large IoT fleet operators, organizations
+         subject to strict data minimization requirements.
+
+      rl=s  (Selector):
+         Aggregate reports include results broken down by selector
+         and trust_tier.  This enables senders to identify which
+         service or key is experiencing failures and at what trust
+         level.  Source IP addresses are included in aggregated
+         form (IP ranges, not individual IPs).
+         This is the DEFAULT if rl= is not specified.
+
+         RECOMMENDED for: Most deployments.
+
+      rl=f  (Full):
+         Forensic-level detail is permitted in aggregate reports,
+         including individual message identifiers, timestamps, and
+         source IPs.
+
+         RECOMMENDED for: Initial deployment and debugging only.
+         Senders SHOULD NOT leave rl=f enabled in production.
+
+11.3.  Protocol-Specific Policy
+
+   The "b=" tag in the policy record allows domains to apply
+   different policies to different protocols.  For example:
+
+      _uasi-policy.example.com. TXT (
+         "v=UASI1; p=enforce; b=smtp:http; "
+         "mt=https; da=relaxed; "
+         "rua=https://uasi-reports.example.com/aggregate" )
+
+   This enforces UASI on SMTP and HTTP traffic with HTTPS-level
+   minimum trust.
+
+   For finer-grained per-protocol policy (e.g., different mt=
+   values per protocol), use per-protocol policy records as
+   described in Section 7.2.
+
+
+12.  Migration and Coexistence
+
+12.1.  Relationship to Existing Mechanisms
+
+   UASI is designed to complement, not replace, existing
+   authentication mechanisms:
+
+   DKIM:
+      The SMTP adapter wraps DKIM rather than replacing it.
+      Domains continue to sign with DKIM; UASI adds cross-protocol
+      identity and unified policy.  No migration from DKIM is
+      required.
+
+   SPF:
+      SPF authenticates the sending IP address, which UASI does
+      not.  SPF and UASI are complementary.  Domains SHOULD
+      continue to publish SPF records alongside UASI.
+
+   DMARC:
+      DMARC aligns SPF and DKIM with the From: domain.  UASI's
+      SMTP adapter operates alongside DMARC, not as a replacement.
+      See Section 9.2.4.
+
+   HTTP Message Signatures (RFC 9421):
+      UASI's HTTP adapter is a profile of RFC 9421.  Applications
+      already using RFC 9421 can adopt the UASI profile by setting
+      the keyid, tag, and alg parameters per Section 9.1.1 and
+      publishing DNS key records.
+
+   mTLS:
+      mTLS authenticates the transport endpoint.  UASI authenticates
+      the application-layer sender.  The two are complementary.
+
+12.2.  Incremental Deployment Path
+
+   The recommended deployment sequence is:
+
+   Phase 1: Monitor
+      Publish a UASI key record and policy record with p=none.
+      Begin signing outbound messages.  Monitor via aggregate
+      reports.  No receiver-side impact.
+
+      During this phase, senders SHOULD verify that signatures
+      survive their actual delivery path, including any
+      intermediaries.
+
+   Phase 2: Report
+      Change policy to p=report.  Cooperating receivers begin
+      verifying and sending reports.  Sender analyzes reports to
+      identify unsigned or failing traffic.
+
+   Phase 3: Gradual Enforcement
+      Change policy to p=enforce with pct=10, then 25, 50, and
+      finally 100 as report data confirms readiness.
+
+   Phase 4: Full Enforcement
+      Policy at p=enforce; pct=100 across all relevant protocol
+      adapters.
+
+   Phase 5: Trust Tier Escalation
+      Once enforcement is stable, operators MAY increase the
+      minimum trust tier:
+      - Start with mt=any (accept all tiers)
+      - Move to mt=https (require WebPKI or DNSSEC)
+      - Move to mt=dnssec (require DNSSEC) when DNSSEC deployment
+        is confirmed for the domain
+
+   This mirrors the proven DMARC deployment model but applies it
+   uniformly across all protocols.
+
+12.2.1.  Recommended Protocol Ordering
+
+   Organizations deploying UASI across multiple protocol adapters
+   SHOULD NOT attempt to enable all adapters simultaneously.
+   Instead, the following ordering is RECOMMENDED:
+
+   1. HTTP (webhooks/APIs):
+      Start here.  The HTTP adapter profiles RFC 9421, which is
+      mature and well-supported.  HTTP traffic is the easiest to
+      test (synchronous request/response), and webhook receivers
+      are likely early adopters.
+
+   2. SMTP (email):
+      Add second.  The SMTP adapter wraps existing DKIM, so
+      deployment requires only publishing a UASI policy record --
+      no changes to email signing infrastructure.  However, allow
+      extra time in Monitor and Report phases to analyze DKIM
+      alignment results.
+
+   3. MQTT/CoAP/WebSocket (IoT and real-time):
+      Add last.  These use native UASI signing, which requires
+      client-side library changes.  Ensure HTTP and SMTP adapters
+      are stable before adding native adapters.
+
+
+13.  Security Considerations
+
+13.1.  DNS Dependency
+
+   UASI's security depends on the integrity of key material
+   obtained from DNS and, when used, HTTPS endpoints.  The
+   three-tier trust model (Section 5) makes this dependency
+   explicit rather than hiding it behind a single binary
+   "authenticated or not" determination.
+
+   Recommendations:
+
+   o  Domains SHOULD deploy DNSSEC to enable the dnssec-verified
+      trust tier.
+
+   o  Domains that deploy DNSSEC SHOULD set mt=dnssec in their
+      policy record to prevent downgrade to weaker tiers.
+
+   o  Domains that do not deploy DNSSEC SHOULD serve
+      .well-known/uasi-keys to enable the https-verified trust
+      tier.
+
+   o  Verifiers SHOULD perform DNSSEC validation where their
+      resolver supports it.
+
+   o  Verifiers SHOULD use encrypted DNS transports (DNS-over-TLS
+      [RFC7858] or DNS-over-HTTPS [RFC8484]) to protect key
+      material in transit from passive observation and on-path
+      modification.  See Section 13.7.
+
+13.2.  DNS Blocking and .well-known Downgrade Attack
+
+   An active attacker who can block DNS responses (e.g., via
+   network-level filtering or selective packet dropping) could
+   force verifiers to fall back to the .well-known HTTPS endpoint.
+   If the attacker has also compromised the web server (but not
+   DNS), they could serve a malicious key via .well-known.
+
+   This attack is mitigated by:
+
+   o  The key discovery ordering (Section 7.4): DNS is always
+      preferred.  .well-known is only consulted when DNS is
+      completely unavailable.
+
+   o  The mt= policy tag: Operators who deploy DNSSEC can set
+      mt=dnssec, which causes https-verified keys to fail policy.
+      An attacker who blocks DNS and serves a malicious .well-known
+      key will achieve only an https-verified trust tier, which
+      will not satisfy mt=dnssec policy.
+
+   o  Verifier behavior: If DNS was previously available for a
+      domain (i.e., the verifier has a cached DNSSEC-validated
+      key), sudden DNS unavailability followed by a .well-known
+      response with a different key SHOULD be treated as suspicious.
+      Verifiers MAY implement a "key pinning" mechanism where a
+      previously dnssec-verified key is preferred over a newly
+      discovered https-verified key for a configurable transition
+      period.
+
+   Residual risk:
+
+   For operators using the default mt=https policy, the DNS
+   blocking attack can succeed if the attacker controls both the
+   network path (to block DNS) and the web server (to serve a
+   malicious key).  This risk is accepted in exchange for practical
+   deployability.  Operators for whom this risk is unacceptable
+   SHOULD set mt=dnssec.
+
+13.3.  Key Discovery Ordering Security
+
+   The decision to prefer DNS over .well-known (and to not consult
+   .well-known when DNS succeeds) prevents a class of attacks where
+   an adversary maintains a conflicting key at the .well-known
+   endpoint.  If both sources were treated as equal, an attacker
+   who compromises the web server could serve a malicious key even
+   when DNS is intact and returns the legitimate key.
+
+   The trade-off is that the .well-known endpoint is only useful
+   when DNS fails entirely.  This is intentional: it ensures that
+   the stronger trust path (DNS, especially with DNSSEC) is always
+   preferred.
+
+13.4.  Key Compromise
+
+   If a UASI private key is compromised, the attacker can forge
+   signatures for the affected selector until the key is rotated.
+
+   Mitigation:
+   o  Use per-service selectors to limit blast radius.
+   o  Set short key expiration times (x= tag).
+   o  Monitor aggregate reports for unexpected signing activity
+      or unexpected trust tier distributions.
+   o  Rotate keys immediately upon suspected compromise.
+   o  Use automated key rotation (Section 6.5) to reduce the
+      window of exposure.
+
+13.5.  Replay Attacks
+
+   An attacker who observes a validly signed message can replay it.
+
+   Mitigation:
+   o  Cross-protocol replay is prevented by the adapter-specific
+      mechanisms described in Section 8.4 (z= tag for native
+      adapters, tag parameter for HTTP, structural binding for
+      SMTP).
+   o  The timestamp and expiry mechanisms limit the temporal
+      validity window.
+   o  The nonce mechanism (Section 8.5) enables intra-protocol
+      replay detection.
+   o  Senders SHOULD use short signature validity windows
+      (RECOMMENDED: 5 minutes for webhooks, 1 hour for email,
+      5 minutes for IoT commands).
+
+13.6.  Canonicalization Brittleness
+
+   Canonicalization -- the process of normalizing message content
+   before signing -- is the most common cause of spurious signature
+   failures in deployed authentication systems.
+
+   For the HTTP adapter, this concern is mitigated by profiling
+   RFC 9421, which has a well-defined component coverage model.
+   Senders control exactly which components are signed.
+
+   For native adapters, the "simple" canonicalization mode used by
+   MQTT and CoAP avoids most normalization issues, as binary
+   protocols preserve payload integrity.
+
+   For the SMTP adapter, canonicalization is handled entirely by
+   DKIM and is not a UASI concern.
+
+   The Phase 1 (Monitor) and Phase 2 (Report) stages of the
+   deployment path (Section 12.2) exist specifically to identify
+   and resolve signature survival issues before enforcement.
+
+13.7.  DNS Query Privacy
+
+   UASI verification requires DNS queries of the form
+   <selector>._uasi.<domain> for every distinct sender.  These
+   queries reveal to DNS resolvers (and any entity on the network
+   path to the resolver) which domains are communicating with
+   the verifier.
+
+   Mitigation:
+
+   o  Verifiers SHOULD use encrypted DNS transports:
+      - DNS-over-TLS (DoT) [RFC7858]
+      - DNS-over-HTTPS (DoH) [RFC8484]
+
+   o  Verifiers SHOULD use a trusted recursive resolver to limit
+      exposure of query patterns to third parties.
+
+   o  Aggressive caching (Section 10.5) reduces the frequency of
+      queries.
+
+   o  QNAME minimization [RFC9156] reduces the information exposed
+      to authoritative servers along the resolution chain.
+
+   o  .well-known key retrieval over HTTPS exposes key requests
+      to the domain's web server operator (who is also the key
+      publisher and therefore already knows the key).  It does not
+      introduce new privacy exposure compared to DNS queries.
+
+13.8.  Privacy Considerations
+
+   UASI signatures reveal the sender domain and selector to any
+   on-path observer.  This is generally not a new privacy exposure
+   (the sender is typically visible in transport headers), but it
+   does formalize the association.
+
+   Aggregate and forensic reports may contain metadata about
+   message flows.  Operators SHOULD handle reports as sensitive
+   data and apply appropriate access controls.
+
+   The trust_tier field in verification results and reports reveals
+   the DNSSEC deployment status of the sender's domain.  This is
+   generally observable via other means (DNSSEC validation is
+   public) but is formalized in UASI reports.
+
+13.9.  Algorithm Agility
+
+   UASI supports algorithm agility through the key record "k=" tag
+   and the IANA algorithm registry (Section 14.3).  When new
+   algorithms are registered, senders can publish new key records
+   and signers can produce signatures using the new algorithm.
+
+   During algorithm transitions, senders SHOULD publish keys under
+   both the old and new algorithms (using different selectors) and
+   sign messages with both algorithms until the old algorithm is
+   deprecated.  This mirrors DKIM's algorithm transition pattern.
+
+13.10.  .well-known Endpoint Security
+
+   The .well-known/uasi-keys endpoint serves public key material
+   over HTTPS.  Security considerations for this endpoint:
+
+   o  The endpoint MUST use TLS 1.2 or later.  TLS 1.3 is
+      RECOMMENDED.
+
+   o  The endpoint MUST present a certificate valid for the domain
+      in question.  Self-signed certificates MUST NOT be accepted
+      by verifiers.
+
+   o  Domain operators SHOULD implement rate limiting on the
+      endpoint to prevent abuse.
+
+   o  The endpoint serves only public keys (not private keys or
+      shared secrets), so a compromise of the endpoint's data
+      does not directly enable forgery.  However, an attacker who
+      can modify the endpoint's responses can serve malicious
+      keys, enabling man-in-the-middle signing.  This is why
+      DNS is preferred and .well-known is a fallback only.
+
+
+14.  IANA Considerations
+
+14.1.  DNS Underscore Label Registration
+
+   This document registers the following underscore labels in the
+   "Underscored and Globally Scoped DNS Node Names" registry
+   [RFC8552]:
+
+      _uasi         -- UASI key records
+      _uasi-policy  -- UASI policy records
+
+14.2.  HTTP Header Field Registration
+
+   This document registers the following HTTP header field in the
+   "Hypertext Transfer Protocol (HTTP) Field Name Registry":
+
+      Field name: UASI-Authentication-Results
+      Status: permanent
+      Specification: This document, Section 9.1.5
+
+   Note: The UASI HTTP adapter uses the Signature and Signature-
+   Input header fields defined by [RFC9421].  No new HTTP signature
+   header fields are registered.
+
+14.3.  UASI Algorithm Registry
+
+   IANA is requested to create a "UASI Signing Algorithms" registry
+   with the following initial entries:
+
+      +------------------+-------------+----------+
+      | Algorithm        | Status      | Reference|
+      +------------------+-------------+----------+
+      | ed25519          | REQUIRED    | RFC 8032 |
+      | es256            | RECOMMENDED | (*)      |
+      +------------------+-------------+----------+
+
+      (*) ECDSA P-256 as defined in FIPS 186-4.
+
+   New entries require Standards Action or IESG Approval.
+
+14.4.  UASI Protocol Context Registry
+
+   IANA is requested to create a "UASI Protocol Context Tags"
+   registry with the following initial entries:
+
+      +------------+-----------+----------+
+      | Context    | Adapter   | Reference|
+      +------------+-----------+----------+
+      | smtp       | profiling | Sec 9.2  |
+      | http       | profiling | Sec 9.1  |
+      | mqtt5      | native    | Sec 9.3  |
+      | coap       | native    | Sec 9.4  |
+      | websocket  | native    | Sec 9.5  |
+      +------------+-----------+----------+
+
+   New entries require Specification Required with Expert Review.
+
+14.5.  UASI Policy Tag Registry
+
+   IANA is requested to create a "UASI Policy Tags" registry with
+   the following initial entries:
+
+      +--------+--------------------------------------+----------+
+      | Tag    | Description                          | Reference|
+      +--------+--------------------------------------+----------+
+      | v      | Version                              | Sec 7.2  |
+      | p      | Policy mode                          | Sec 7.2  |
+      | rua    | Aggregate reporting URI               | Sec 7.2  |
+      | ruf    | Forensic reporting URI                | Sec 7.2  |
+      | pct    | Policy application percentage        | Sec 7.2  |
+      | sp     | Subdomain policy                     | Sec 7.2  |
+      | b      | Protocol binding scope               | Sec 7.2  |
+      | rl     | Report granularity level             | Sec 7.2  |
+      | mt     | Minimum trust tier                   | Sec 7.2  |
+      | da     | DKIM alignment mode                  | Sec 7.2  |
+      +--------+--------------------------------------+----------+
+
+   New entries require Standards Action or IESG Approval.
+
+14.6.  CoAP Option Number Registration
+
+   This document requests assignment of a CoAP Option Number for
+   the UASI-Signature option in the "CoAP Option Numbers" registry:
+
+      Option Name: UASI-Signature
+      Option Number: TBD
+      Reference: This document, Section 9.4
+
+14.7.  Well-Known URI Registration
+
+   This document registers the following well-known URI in the
+   "Well-Known URIs" registry [RFC8615]:
+
+      URI Suffix: uasi-keys
+      Change Controller: IETF
+      Reference: This document, Section 7.3
+      Status: permanent
+
+
+15.  References
+
+15.1.  Normative References
+
+   [RFC2119]  Bradner, S., "Key words for use in RFCs to Indicate
+              Requirement Levels", BCP 14, RFC 2119, March 1997.
+
+   [RFC4033]  Arends, R., et al., "DNS Security Introduction and
+              Requirements", RFC 4033, March 2005.
+
+   [RFC6376]  Crocker, D., Hansen, T., and M. Kucherawy,
+              "DomainKeys Identified Mail (DKIM) Signatures",
+              STD 76, RFC 6376, September 2011.
+
+   [RFC7858]  Hu, Z., et al., "Specification for DNS over Transport
+              Layer Security (TLS)", RFC 7858, May 2016.
+
+   [RFC8032]  Josefsson, S. and I. Liusvaara, "Edwards-Curve
+              Digital Signature Algorithm (EdDSA)", RFC 8032,
+              January 2017.
+
+   [RFC8174]  Leiba, B., "Ambiguity of Uppercase vs Lowercase in
+              RFC 2119 Key Words", BCP 14, RFC 8174, May 2017.
+
+   [RFC8484]  Hoffman, P. and P. McManus, "DNS Queries over HTTPS
+              (DoH)", RFC 8484, October 2018.
+
+   [RFC8552]  Crocker, D., "Scoped Interpretation of DNS Resource
+              Records through 'Underscored' Naming of Attribute
+              Leaves", BCP 222, RFC 8552, March 2019.
+
+   [RFC8615]  Nottingham, M., "Well-Known Uniform Resource
+              Identifiers (URIs)", RFC 8615, May 2019.
+
+   [RFC9156]  Bortzmeyer, S., et al., "DNS Query Name
+              Minimisation to Improve Privacy", RFC 9156,
+              November 2021.
+
+   [RFC9421]  Backman, A., et al., "HTTP Message Signatures",
+              RFC 9421, February 2024.
+
+   [RFC9530]  Polli, R. and L. Pardue, "Digest Fields",
+              RFC 9530, February 2024.
+
+15.2.  Informative References
+
+   [RFC7030]  Pritikin, M., et al., "Enrollment over Secure
+              Transport", RFC 7030, October 2013.
+
+   [RFC7208]  Kitterman, S., "Sender Policy Framework (SPF)",
+              RFC 7208, April 2014.
+
+   [RFC7489]  Kucherawy, M. and E. Zwicky, "Domain-based Message
+              Authentication, Reporting, and Conformance (DMARC)",
+              RFC 7489, March 2015.
+
+   [RFC7671]  Dukhovni, V. and W. Hardaker, "The DNS-Based
+              Authentication of Named Entities (DANE) Protocol:
+              Updates and Operational Guidance", RFC 7671,
+              October 2015.
+
+   Note on normative references to Informational RFCs: This document
+   makes a normative reference to RFC 8032 (EdDSA), which defines
+   the mandatory-to-implement signing algorithm.  RFC 8032 is widely
+   referenced normatively by Standards Track documents and is
+   expected to receive IESG approval as a downref during Last Call.
+
+
+Appendix A.  Example Flows
+
+A.1.  HTTP Webhook Verification
+
+   This example shows a SaaS provider (saas.example.com) sending
+   a webhook to a customer (customer.example.org), using the HTTP
+   adapter (RFC 9421 profile) with Content-Digest and nonce-based
+   replay detection.
+
+   Setup (one-time):
+
+   1. saas.example.com generates an Ed25519 key pair.
+   2. saas.example.com publishes:
+
+      webhooks._uasi.saas.example.com. 86400 IN TXT (
+         "v=UASI1; k=ed25519; p=BASE64PUBKEY==;" )
+
+      _uasi-policy.saas.example.com. 86400 IN TXT (
+         "v=UASI1; p=enforce; mt=https; b=http; "
+         "rua=mailto:uasi@saas.example.com" )
+
+   3. saas.example.com also serves:
+
+      GET https://saas.example.com/.well-known/uasi-keys/webhooks
+      -> {"v": "UASI1", "k": "ed25519", "p": "BASE64PUBKEY=="}
+
+   Sending:
+
+   4. saas.example.com sends a webhook:
+
+      POST /webhooks/orders HTTP/1.1
+      Host: customer.example.org
+      Content-Type: application/json; charset=utf-8
+      Content-Digest: sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7=:
+      X-Webhook-Event: order.completed
+      X-Request-Id: req-789
+      Signature-Input: uasi-sig=("@method" "@authority" "@path"
+        "content-type" "content-digest" "x-webhook-event"
+        "x-request-id");keyid="webhooks._uasi.saas.example.com";
+        alg="ed25519";tag="uasi";created=1710500000;
+        expires=1710500300;nonce="550e8400-e29b-41d4"
+      Signature: uasi-sig=:Ed25519SignatureValue=:
+
+      {"order_id":"789","total":99.50}
+
+   Verification:
+
+   5. customer.example.org extracts Signature-Input, finds label
+      "uasi-sig" with tag="uasi".
+
+   6. Parses keyid="webhooks._uasi.saas.example.com", extracts
+      selector="webhooks", domain="saas.example.com".
+
+   7. Key discovery: queries DNS for
+      webhooks._uasi.saas.example.com.  DNS returns an unsigned
+      response with the key record.  Trust tier: dns-unsigned.
+
+   8. However, mt=https requires at minimum https-verified.
+      dns-unsigned does not satisfy mt=https.
+
+      Alternative flow: If the domain has DNSSEC, trust tier
+      would be dnssec-verified (satisfies mt=https).  Or if DNS
+      had failed and .well-known was used, trust tier would be
+      https-verified (satisfies mt=https).
+
+      For this example, assume the domain has DNSSEC:
+      Trust tier: dnssec-verified.
+
+   9. Verifies the RFC 9421 signature using the cached Ed25519
+      key.  Signature valid.
+
+   10. Checks nonce cache for (saas.example.com, webhooks,
+       550e8400-e29b-41d4).  Not found -- nonce is fresh.
+
+   11. Adds nonce to cache with TTL = 300 seconds.
+
+   12. Queries policy: p=enforce, mt=https.  dnssec-verified
+       satisfies mt=https.  Status: pass.
+
+   13. Structured result:
+       {
+         "status": "pass",
+         "trust_tier": "dnssec-verified",
+         "protocol": "http",
+         "identity": "webhooks._uasi.saas.example.com"
+       }
+
+A.2.  SMTP with DKIM Alignment
+
+   A domain using DKIM with UASI policy for unified reporting:
+
+   Setup:
+
+   1. example.com already has DKIM deployed:
+
+      google-2026._domainkey.example.com. 3600 IN TXT (
+         "v=DKIM1; k=rsa; p=..." )
+
+   2. example.com adds UASI policy:
+
+      _uasi-policy.example.com. 3600 IN TXT (
+         "v=UASI1; p=report; da=relaxed; mt=any; "
+         "rua=mailto:uasi@example.com" )
+
+   Email flow:
+
+   3. example.com sends email with DKIM signature:
+
+      DKIM-Signature: v=1; a=rsa-sha256; d=example.com;
+         s=google-2026; ... [standard DKIM signature]
+      From: ceo@example.com
+      To: board@example.org
+      Subject: Q1 Results
+
+   4. Receiving MTA performs DKIM verification: pass.
+
+   5. UASI verification engine:
+      - DKIM d=example.com matches UASI policy domain
+      - da=relaxed: any DKIM selector accepted
+      - DKIM result: pass
+      - DKIM key lookup was unsigned: trust tier = dns-unsigned
+      - mt=any: dns-unsigned is accepted
+
+   6. Structured result:
+      {
+        "status": "pass",
+        "trust_tier": "dns-unsigned",
+        "protocol": "smtp",
+        "identity": "google-2026._uasi.example.com"
+      }
+
+   7. Since p=report, the result is logged and included in the
+      next aggregate report to uasi@example.com.
+
+A.3.  MQTT IoT Telemetry
+
+   A temperature sensor (part of a fleet managed by
+   iot.example.com) publishes readings via MQTT using UASI
+   native signing.
+
+   Setup:
+
+   1. iot.example.com generates an Ed25519 key pair for the fleet.
+   2. iot.example.com publishes:
+
+      fleet-a._uasi.iot.example.com. 3600 IN TXT (
+         "v=UASI1; k=ed25519; p=BASE64PUBKEY==; "
+         "n=Fleet A temperature sensors" )
+
+      _uasi-policy.iot.example.com. 3600 IN TXT (
+         "v=UASI1; p=enforce; mt=any; b=mqtt5" )
+
+   Sending (MQTT v5 PUBLISH):
+
+   3. Topic: sensors/building-7/temp
+      Payload: {"temp_c": 22.5, "ts": 1710500000}
+      User Property:
+         UASI-Signature: v=1; a=ed25519-sha256;
+            d=iot.example.com; s=fleet-a; t=1710500000;
+            z=mqtt5; c=simple;
+            h=@topic:@content-type;
+            bh=PayloadHash==;
+            b=Ed25519SigValue==
+
+   Verification:
+
+   4. Data ingestion platform extracts UASI-Signature.
+   5. Parses d=iot.example.com, s=fleet-a.
+   6. Key discovery: DNS returns unsigned response.
+      Trust tier: dns-unsigned.
+   7. Verifies Ed25519 signature.  Pass.
+   8. No nonce (telemetry is idempotent).
+   9. Policy: p=enforce, mt=any.  dns-unsigned accepted.
+
+   10. Result:
+       {
+         "status": "pass",
+         "trust_tier": "dns-unsigned",
+         "protocol": "mqtt5",
+         "identity": "fleet-a._uasi.iot.example.com"
+       }
+
+A.4.  Key Discovery with .well-known Fallback
+
+   This example demonstrates the key discovery fallback path.
+
+   1. Verifier receives an HTTP webhook with
+      keyid="api._uasi.sender.example.com".
+
+   2. Key discovery:
+      a. Queries DNS for api._uasi.sender.example.com.
+      b. DNS returns SERVFAIL (resolver error).
+      c. Falls back to .well-known:
+         GET https://sender.example.com/.well-known/uasi-keys/api
+      d. Response:
+         {"v": "UASI1", "k": "ed25519", "p": "BASE64KEY=="}
+      e. Trust tier: https-verified.
+
+   3. Verification proceeds normally with the retrieved key.
+
+   4. If sender's policy is mt=https: https-verified satisfies
+      the policy.  If mt=dnssec: https-verified does NOT satisfy,
+      and the result is treated as a policy failure.
+
+A.5.  WebSocket Per-Message Signing
+
+   A real-time data feed using WebSocket with per-message signing:
+
+   1. Client connects via WebSocket.  The HTTP Upgrade request
+      is signed using the HTTP adapter (Section 9.1).
+
+   2. After the handshake, the server sends per-message signatures:
+
+      Binary frame:
+      [00 8A]                          <- Sig length: 138 bytes
+      [v=1; a=ed25519-sha256; d=feed.example.com; s=realtime;
+       t=1710500000; z=websocket; c=simple;
+       n=msg-00001; bh=hash==; b=sig==]  <- UASI-Signature
+      [{"price": 42.50, "sym": "ACME"}]  <- Payload
+
+   3. Receiver extracts first 2 bytes (00 8A = 138), reads 138
+      bytes of signature, remainder is payload.
+
+   4. Verifies using standard UASI native adapter procedure.
+
+
+Appendix B.  Comparison with Existing Mechanisms
+
+   +------------------+--------+--------+--------+--------+--------+
+   | Feature          | DKIM   | SPF    | RFC9421| mTLS   | UASI   |
+   +------------------+--------+--------+--------+--------+--------+
+   | Protocol scope   | Email  | Email  | HTTP   | Any/TLS| Any    |
+   | Authenticates    | Domain | IP     | Signer | Cert   | Domain |
+   | Key distribution | DNS    | DNS    | App    | PKI/CA | DNS+WK |
+   | Policy framework | (DMARC)| (DMARC)| No     | No     | Yes    |
+   | Body signing     | Yes    | No     | Yes    | No(1)  | Yes    |
+   | Cross-protocol   | No     | No     | No     | N/A    | Yes    |
+   | Replay protect   | Partial| N/A    | Partial| Yes    | Yes(2) |
+   | IoT suitable     | No     | No     | No     | Heavy  | Yes    |
+   | Trust tiers      | 1(3)   | 1(3)   | N/A    | PKI    | 3(4)   |
+   | Delegation       | CNAME  | incl   | Manual | SubCA  | CNAME  |
+   +------------------+--------+--------+--------+--------+--------+
+
+   (1) mTLS secures the channel, not individual messages.
+   (2) Cross-protocol via z= tag / RFC 9421 tag parameter /
+       structural binding.  Intra-protocol via nonce mechanism.
+   (3) Effectively dns-unsigned only for most deployments.
+   (4) dnssec-verified, https-verified, dns-unsigned.
+
+   Key difference from -00: UASI now profiles RFC 9421 for HTTP
+   and wraps DKIM for SMTP, rather than defining new signing
+   formats for these protocols.  The "Key distribution" column
+   now shows "DNS+WK" reflecting the .well-known fallback.
+
+
+Appendix C.  Selector Management Patterns
+
+C.1.  Microservice Architecture
+
+   A microservice deployment with 50 services, each with its own
+   selector:
+
+   Naming convention:
+      <service-name>-<YYYYMMDD>._uasi.<domain>
+
+   Example:
+      order-svc-20260315._uasi.api.example.com
+      payment-svc-20260315._uasi.api.example.com
+      notification-svc-20260315._uasi.api.example.com
+
+   Automation:
+      The CI/CD pipeline generates a new key pair on each quarterly
+      rotation, publishes the new selector via DNS API, updates the
+      service's signing configuration, and schedules the old
+      selector for deletion after 48 hours (old TTL + delivery
+      buffer).  The pipeline also updates the .well-known endpoint.
+
+   Monitoring:
+      A cron job queries all *._uasi.api.example.com selectors and
+      alerts if any key's "x=" expiry is within 7 days.
+
+C.2.  IoT Fleet
+
+   A fleet of 5,000 sensors divided into 5 groups of 1,000:
+
+   Naming convention:
+      fleet-<group>-<YYYYMM>._uasi.<domain>
+
+   Example:
+      fleet-a-202603._uasi.iot.example.com
+      fleet-b-202603._uasi.iot.example.com
+      ...
+      fleet-e-202603._uasi.iot.example.com
+
+   Key material:
+      Each group uses Ed25519 public key signing.  The private key
+      is provisioned to devices during enrollment.  For constrained
+      devices unable to perform public key cryptography, see the
+      companion document draft-uasi-constrained.
+
+C.3.  SaaS Provider with Customer Delegation
+
+   A SaaS provider (saas.example.com) sending webhooks on behalf
+   of 1,000 customers:
+
+   Customer DNS setup (one CNAME per customer):
+      webhooks._uasi.customer1.com. CNAME wh._uasi.saas.example.com.
+      webhooks._uasi.customer2.com. CNAME wh._uasi.saas.example.com.
+
+   SaaS provider manages:
+      A single key pair under wh._uasi.saas.example.com.
+      Signatures use keyid="webhooks._uasi.customer1.com" (the
+      customer's UASI identity).  Verifiers resolve via CNAME to
+      the SaaS provider's key.
+
+   This scales linearly: adding a new customer requires one CNAME
+   record, not a new key pair.
+
+
+Appendix D.  Changes from draft-uasi-framework-00
+
+   This appendix summarizes the changes between
+   draft-uasi-framework-00 and draft-uasi-framework-01.  This
+   is a major revision motivated by review feedback on the
+   secdispatch mailing list.
+
+D.1.  Removed
+
+   o  Custom UASI-Signature format for HTTP.  Replaced by a
+      profile of RFC 9421 (HTTP Message Signatures).
+
+   o  Custom UASI signing for SMTP.  Replaced by DKIM alignment
+      model -- UASI wraps existing DKIM rather than adding a
+      second email signature.
+
+   o  Trust-On-First-Use (TOFU) security model and all language
+      describing or defending TOFU semantics.  Replaced by the
+      three-tier trust model (dnssec-verified, https-verified,
+      dns-unsigned).
+
+   o  KDF-hint constrained device model (previously Section 12.4).
+      Deferred to a companion document (draft-uasi-constrained).
+
+   o  kdf-hmac-sha256 algorithm from the IANA algorithm registry.
+
+   o  IANA KDF Algorithm Registry (was Section 13.5 in -00).
+
+   o  rs256 (RSA-2048) algorithm.  Deferred pending demonstrated
+      interoperability demand.
+
+   o  Normative reference to RFC 5869 (HKDF), which was required
+      only by the KDF-hint model.
+
+D.2.  Added
+
+   o  .well-known/uasi-keys HTTPS endpoint for key discovery when
+      DNS is unavailable (Section 7.3).
+
+   o  Three trust tiers: dnssec-verified, https-verified,
+      dns-unsigned (Section 5).
+
+   o  Key discovery procedure with explicit ordering: DNS first,
+      .well-known fallback (Section 7.4).
+
+   o  mt= (minimum trust) policy tag allowing domain operators to
+      set the minimum acceptable trust tier (Section 7.2).
+
+   o  da= (DKIM alignment) policy tag for the SMTP adapter
+      (Section 7.2).
+
+   o  Protocol adapter architecture with profiling adapters (HTTP,
+      SMTP) and native adapters (MQTT, CoAP, WebSocket)
+      (Section 9).
+
+   o  HTTP adapter profiling RFC 9421 with keyid=UID, tag="uasi",
+      Content-Digest requirement (Section 9.1).
+
+   o  SMTP adapter wrapping DKIM with alignment rules
+      (Section 9.2).
+
+   o  WebSocket binary prefix format for per-message signing
+      (Section 9.5.2).
+
+   o  CoAP compact binary encoding for constrained environments
+      (Section 9.4.5).
+
+   o  trust_tier field in verification results and aggregate
+      reports (Section 10.2, Section 11.2).
+
+   o  Per-protocol policy records
+      (_uasi-policy._<context>.<domain>) (Section 7.2).
+
+   o  Security analysis of DNS blocking / .well-known downgrade
+      attack (Section 13.2).
+
+   o  IANA registration for .well-known URI suffix "uasi-keys"
+      (Section 14.7).
+
+   o  IANA Policy Tag Registry (Section 14.5).
+
+   o  Normative references to RFC 9421 (HTTP Message Signatures)
+      and RFC 9530 (Digest Fields).
+
+   o  Informative reference to RFC 7671 (DANE).
+
+D.3.  Unchanged
+
+   o  UASI Identity (UID) namespace and
+      <selector>._uasi.<domain> format.
+
+   o  DNS key record format (minus KDF entries and rs256).
+
+   o  Ed25519 as mandatory-to-implement algorithm.
+
+   o  Native UASI-Signature format for MQTT, CoAP, and WebSocket
+      (extended with compact encodings for CoAP and binary prefix
+      for WebSocket).
+
+   o  Nonce-based replay detection mechanism.
+
+   o  Policy record format (extended with mt= and da= tags).
+
+   o  Canonicalization modes (simple, relaxed, strict) for native
+      adapters.
+
+   o  Problem statement (Sections 3.1-3.3) largely preserved.
+
+   o  Selector management guidance (Section 6.5).
+
+   o  Delegation via CNAME (Section 6.3).
+
+
+Acknowledgements
+
+   The authors thank Eric Rescorla for detailed review of
+   draft-uasi-framework-00 on the IETF secdispatch mailing list.
+   His feedback on the DNSSEC dependency and the relationship to
+   existing signing standards motivated the architectural revision
+   in this version, including the protocol adapter model and the
+   three-tier trust framework.
+
+
+Authors' Addresses
+
+   Martin Welen (editor)
+   Atea Sverige AB
+   Sweden
+   Email: martin@welen.com
