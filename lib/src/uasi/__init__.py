@@ -50,6 +50,7 @@ from .models import (
 )
 from .signer import UASISigner
 from .verifier import NonceCache, UASIVerifier, VerificationDetail, trust_tier_satisfies_policy
+from .wellknown import key_to_wellknown_json, parse_wellknown_json
 
 # HTTP binding convenience functions
 from .bindings.http import sign_http_request, verify_http_request
@@ -74,6 +75,9 @@ __all__ = [
     "VerificationDetail",
     "NonceCache",
     "trust_tier_satisfies_policy",
+    # .well-known key format
+    "key_to_wellknown_json",
+    "parse_wellknown_json",
     # HTTP binding
     "sign_http_request",
     "verify_http_request",

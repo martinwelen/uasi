@@ -23,6 +23,8 @@ from uasi import (
     sign_http_request,
     verify_http_request,
     trust_tier_satisfies_policy,
+    key_to_wellknown_json,
+    parse_wellknown_json,
 )
 
 
@@ -93,6 +95,39 @@ class TestTrustTierVerification:
         result = verifier.verify(sig.serialize(), b"hello", "http", {})
         assert result.passed
         assert result.trust_tier == TrustTier.LOCAL
+
+
+# ─── .well-known Key Format ───
+
+
+class TestWellKnown:
+    def test_key_to_wellknown_json(self):
+        kp = UASIKeyPair.generate("s1", "example.com")
+        data = key_to_wellknown_json(kp)
+        assert data["v"] == "UASI1"
+        assert data["k"] == "ed25519"
+        assert data["p"] == kp.public_key_b64
+
+    def test_parse_wellknown_json(self):
+        kp = UASIKeyPair.generate("s1", "example.com")
+        data = key_to_wellknown_json(kp)
+        record = parse_wellknown_json(data)
+        assert record.version == "UASI1"
+        assert record.algorithm == "ed25519"
+        assert record.public_key_b64 == kp.public_key_b64
+
+    def test_wellknown_roundtrip(self):
+        kp = UASIKeyPair.generate("s1", "example.com")
+        data = key_to_wellknown_json(kp)
+        record = parse_wellknown_json(data)
+        # Verify the key can actually be used for verification
+        from uasi import UASIVerifier, UASISigner
+        signer = UASISigner(kp, use_nonce=False)
+        sig = signer.sign(b"test", "http")
+        verifier = UASIVerifier()
+        verifier.add_key("example.com", "s1", record)
+        result = verifier.verify(sig.serialize(), b"test", "http")
+        assert result.passed
 
 
 # ─── Key Management ───
