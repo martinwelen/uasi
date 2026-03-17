@@ -10,6 +10,7 @@ from uasi import (
     Canonicalization,
     NonceCache,
     PolicyMode,
+    TrustTier,
     UASIKeyPair,
     UASIKeyRecord,
     UASIPolicyRecord,
@@ -21,7 +22,77 @@ from uasi import (
     parse_policy_record,
     sign_http_request,
     verify_http_request,
+    trust_tier_satisfies_policy,
 )
+
+
+# ─── Trust Tiers & Policy (new in -01) ───
+
+
+class TestTrustTier:
+    def test_trust_tier_values(self):
+        assert TrustTier.DNSSEC_VERIFIED.value == "dnssec-verified"
+        assert TrustTier.HTTPS_VERIFIED.value == "https-verified"
+        assert TrustTier.DNS_UNSIGNED.value == "dns-unsigned"
+        assert TrustTier.LOCAL.value == "local"
+
+
+class TestMinimumTrust:
+    def test_policy_record_mt_tag(self):
+        txt = "v=UASI1; p=enforce; mt=dnssec; rua=mailto:uasi@example.com"
+        record = parse_policy_record(txt)
+        assert record.minimum_trust == "dnssec"
+
+    def test_policy_record_mt_default(self):
+        txt = "v=UASI1; p=enforce; rua=mailto:uasi@example.com"
+        record = parse_policy_record(txt)
+        assert record.minimum_trust == "https"
+
+    def test_policy_record_da_tag(self):
+        txt = "v=UASI1; p=enforce; da=relaxed; rua=mailto:uasi@example.com"
+        record = parse_policy_record(txt)
+        assert record.dkim_alignment == "relaxed"
+
+    def test_policy_record_mt_roundtrip(self):
+        txt = "v=UASI1; p=enforce; mt=dnssec; da=strict; rua=mailto:uasi@example.com"
+        record = parse_policy_record(txt)
+        serialized = record.to_dns_txt()
+        assert "mt=dnssec" in serialized
+        assert "da=strict" in serialized
+
+    def test_policy_mt_check_pass(self):
+        """mt=https should accept both dnssec-verified and https-verified."""
+        policy = UASIPolicyRecord(version="UASI1", policy=PolicyMode.ENFORCE, minimum_trust="https")
+        assert trust_tier_satisfies_policy(TrustTier.DNSSEC_VERIFIED, policy)
+        assert trust_tier_satisfies_policy(TrustTier.HTTPS_VERIFIED, policy)
+        assert not trust_tier_satisfies_policy(TrustTier.DNS_UNSIGNED, policy)
+
+    def test_policy_mt_dnssec_strict(self):
+        """mt=dnssec should only accept dnssec-verified."""
+        policy = UASIPolicyRecord(version="UASI1", policy=PolicyMode.ENFORCE, minimum_trust="dnssec")
+        assert trust_tier_satisfies_policy(TrustTier.DNSSEC_VERIFIED, policy)
+        assert not trust_tier_satisfies_policy(TrustTier.HTTPS_VERIFIED, policy)
+        assert not trust_tier_satisfies_policy(TrustTier.DNS_UNSIGNED, policy)
+
+    def test_policy_mt_any(self):
+        """mt=any should accept everything."""
+        policy = UASIPolicyRecord(version="UASI1", policy=PolicyMode.ENFORCE, minimum_trust="any")
+        assert trust_tier_satisfies_policy(TrustTier.DNSSEC_VERIFIED, policy)
+        assert trust_tier_satisfies_policy(TrustTier.HTTPS_VERIFIED, policy)
+        assert trust_tier_satisfies_policy(TrustTier.DNS_UNSIGNED, policy)
+        assert trust_tier_satisfies_policy(TrustTier.LOCAL, policy)
+
+
+class TestTrustTierVerification:
+    def test_local_key_returns_local_trust_tier(self):
+        kp = UASIKeyPair.generate("s1", "example.com")
+        signer = UASISigner(kp, use_nonce=False)
+        sig = signer.sign(b"hello", "http", {}, [])
+        verifier = UASIVerifier()
+        verifier.add_key("example.com", "s1", kp.dns_key_record())
+        result = verifier.verify(sig.serialize(), b"hello", "http", {})
+        assert result.passed
+        assert result.trust_tier == TrustTier.LOCAL
 
 
 # ─── Key Management ───

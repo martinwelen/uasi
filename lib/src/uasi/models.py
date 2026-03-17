@@ -38,6 +38,14 @@ class VerificationResult(str, Enum):
     TEMPERROR = "temperror"
 
 
+class TrustTier(str, Enum):
+    """Trust tier for key discovery (Section 5 of -01)."""
+    DNSSEC_VERIFIED = "dnssec-verified"
+    HTTPS_VERIFIED = "https-verified"
+    DNS_UNSIGNED = "dns-unsigned"
+    LOCAL = "local"
+
+
 @dataclass
 class UASIKeyRecord:
     """Parsed UASI DNS key record (Section 6.1)."""
@@ -84,10 +92,16 @@ class UASIPolicyRecord:
     subdomain_policy: Optional[PolicyMode] = None
     bindings: Optional[list[str]] = None  # e.g., ["smtp", "http"]
     report_level: str = "s"  # "d", "s", or "f"
+    minimum_trust: str = "https"  # "dnssec", "https", or "any" (mt= tag)
+    dkim_alignment: Optional[str] = None  # "relaxed" or "strict" (da= tag)
 
     def to_dns_txt(self) -> str:
         """Serialize to DNS TXT record value."""
         parts = [f"v={self.version}", f"p={self.policy.value}"]
+        if self.minimum_trust != "https":
+            parts.append(f"mt={self.minimum_trust}")
+        if self.dkim_alignment:
+            parts.append(f"da={self.dkim_alignment}")
         if self.percentage != 100:
             parts.append(f"pct={self.percentage}")
         if self.report_aggregate_uri:

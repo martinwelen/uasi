@@ -42,13 +42,14 @@ from .models import (
     Algorithm,
     Canonicalization,
     PolicyMode,
+    TrustTier,
     UASIKeyRecord,
     UASIPolicyRecord,
     UASISignature,
     VerificationResult,
 )
 from .signer import UASISigner
-from .verifier import NonceCache, UASIVerifier, VerificationDetail
+from .verifier import NonceCache, UASIVerifier, VerificationDetail, trust_tier_satisfies_policy
 
 # HTTP binding convenience functions
 from .bindings.http import sign_http_request, verify_http_request
@@ -62,6 +63,7 @@ __all__ = [
     "Algorithm",
     "Canonicalization",
     "PolicyMode",
+    "TrustTier",
     "UASIKeyRecord",
     "UASIPolicyRecord",
     "UASISignature",
@@ -71,6 +73,7 @@ __all__ = [
     "UASIVerifier",
     "VerificationDetail",
     "NonceCache",
+    "trust_tier_satisfies_policy",
     # HTTP binding
     "sign_http_request",
     "verify_http_request",

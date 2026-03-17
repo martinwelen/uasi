@@ -15,6 +15,7 @@ from .models import (
     Algorithm,
     Canonicalization,
     PolicyMode,
+    TrustTier,
     UASIKeyRecord,
     UASIPolicyRecord,
     UASISignature,
@@ -81,19 +82,47 @@ class VerificationDetail:
         signature: Optional[UASISignature] = None,
         key_record: Optional[UASIKeyRecord] = None,
         policy_record: Optional[UASIPolicyRecord] = None,
+        trust_tier: TrustTier = TrustTier.LOCAL,
     ):
         self.result = result
         self.reason = reason
         self.signature = signature
         self.key_record = key_record
         self.policy_record = policy_record
+        self.trust_tier = trust_tier
 
     @property
     def passed(self) -> bool:
         return self.result == VerificationResult.PASS
 
     def __repr__(self) -> str:
-        return f"VerificationDetail(result={self.result.value}, reason={self.reason!r})"
+        return (
+            f"VerificationDetail(result={self.result.value}, "
+            f"trust_tier={self.trust_tier.value}, reason={self.reason!r})"
+        )
+
+
+# Trust tier ordering for policy evaluation
+_TRUST_TIER_LEVEL = {
+    TrustTier.DNSSEC_VERIFIED: 3,
+    TrustTier.HTTPS_VERIFIED: 2,
+    TrustTier.DNS_UNSIGNED: 1,
+    TrustTier.LOCAL: 0,
+}
+
+# Minimum trust tier required for each mt= policy value
+_MT_REQUIRED_LEVEL = {
+    "dnssec": 3,  # Only dnssec-verified
+    "https": 2,   # dnssec-verified or https-verified
+    "any": 0,     # Any tier
+}
+
+
+def trust_tier_satisfies_policy(tier: TrustTier, policy: UASIPolicyRecord) -> bool:
+    """Check whether a trust tier satisfies a policy's mt= requirement."""
+    tier_level = _TRUST_TIER_LEVEL[tier]
+    required_level = _MT_REQUIRED_LEVEL.get(policy.minimum_trust, 2)
+    return tier_level >= required_level
 
 
 class UASIVerifier:

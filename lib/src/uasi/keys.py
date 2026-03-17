@@ -140,6 +140,8 @@ def parse_policy_record(txt_value: str) -> UASIPolicyRecord:
         subdomain_policy=PolicyMode(tags["sp"]) if "sp" in tags else None,
         bindings=tags["b"].split(":") if "b" in tags else None,
         report_level=tags.get("rl", "s"),
+        minimum_trust=tags.get("mt", "https"),
+        dkim_alignment=tags.get("da"),
     )
 
 
