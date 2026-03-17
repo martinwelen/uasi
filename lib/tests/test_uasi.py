@@ -420,87 +420,159 @@ class TestReplayDetection:
         assert "saturated" in result.reason.lower()
 
 
-# ─── HTTP Binding ───
+# ─── HTTP Binding (RFC 9421 Profile) ───
 
 
 class TestHTTPBinding:
     def test_sign_and_verify_webhook(self):
+        """End-to-end sign and verify using RFC 9421 format."""
         key_pair = UASIKeyPair.generate("webhooks", "saas.example.com")
         body = json.dumps({"order_id": "123", "status": "shipped"}).encode()
 
-        sig_header = sign_http_request(
+        result_headers = sign_http_request(
             key_pair,
             method="POST",
             target_uri="https://customer.example.org/webhooks/orders",
             body=body,
             headers={
                 "content-type": "application/json",
-                "x-request-id": "req-456",
-                "host": "customer.example.org",
             },
-            signed_fields=["@method", "@target-uri", "x-request-id"],
         )
+
+        assert "signature-input" in result_headers
+        assert "signature" in result_headers
+        assert "content-digest" in result_headers
 
         verifier = UASIVerifier()
         verifier.add_key("saas.example.com", "webhooks", key_pair.dns_key_record())
 
-        result = verify_http_request(
+        detail = verify_http_request(
             verifier,
-            signature_header=sig_header,
+            signature_input=result_headers["signature-input"],
+            signature=result_headers["signature"],
             method="POST",
             target_uri="https://customer.example.org/webhooks/orders",
             body=body,
-            headers={
-                "content-type": "application/json",
-                "x-request-id": "req-456",
-                "host": "customer.example.org",
-            },
+            headers={"content-type": "application/json"},
         )
-        assert result.passed
+        assert detail.passed
+
+    def test_keyid_is_uasi_identity(self):
+        """keyid should be the full UASI DNS name."""
+        kp = UASIKeyPair.generate("s1", "example.com")
+        result = sign_http_request(
+            kp, method="POST",
+            target_uri="https://example.com/hook",
+            body=b'{"test": true}',
+        )
+        assert "s1._uasi.example.com" in result["signature-input"]
+
+    def test_tag_parameter_is_uasi(self):
+        """RFC 9421 tag parameter should be 'uasi'."""
+        kp = UASIKeyPair.generate("s1", "example.com")
+        result = sign_http_request(
+            kp, method="POST",
+            target_uri="https://example.com/hook",
+            body=b'{"test": true}',
+        )
+        assert 'tag="uasi"' in result["signature-input"]
 
     def test_prohibited_header_raises(self):
         key_pair = UASIKeyPair.generate("test", "example.com")
-        with pytest.raises(ValueError, match="MUST NOT be signed"):
+        with pytest.raises(ValueError, match="prohibited"):
             sign_http_request(
                 key_pair,
                 method="POST",
-                target_uri="/test",
+                target_uri="https://example.com/test",
                 body=b"test",
                 signed_fields=["x-forwarded-for"],  # Prohibited!
             )
 
+    def test_body_modification_detected(self):
+        """Tampered body should fail verification."""
+        kp = UASIKeyPair.generate("s1", "example.com")
+        body = b'{"amount": 100}'
+        result = sign_http_request(
+            kp, method="POST",
+            target_uri="https://example.com/hook", body=body,
+        )
+        verifier = UASIVerifier()
+        verifier.add_key("example.com", "s1", kp.dns_key_record())
+        detail = verify_http_request(
+            verifier,
+            signature_input=result["signature-input"],
+            signature=result["signature"],
+            method="POST",
+            target_uri="https://example.com/hook",
+            body=b'{"amount": 999}',  # Tampered!
+        )
+        assert not detail.passed
+
     def test_intermediary_adds_header_signature_survives(self):
-        """Strict mode: signature survives when intermediary adds new headers."""
+        """Signature survives when intermediary adds non-signed headers."""
         key_pair = UASIKeyPair.generate("webhooks", "sender.example.com")
         body = b'{"data": true}'
 
-        sig_header = sign_http_request(
+        result_headers = sign_http_request(
             key_pair,
             method="POST",
-            target_uri="/webhook",
+            target_uri="https://receiver.example.com/webhook",
             body=body,
-            headers={"x-request-id": "req-1"},
-            signed_fields=["@method", "@target-uri", "x-request-id"],
+            headers={"content-type": "application/json"},
         )
 
         verifier = UASIVerifier()
         verifier.add_key("sender.example.com", "webhooks", key_pair.dns_key_record())
 
-        # Simulate intermediary adding headers
-        result = verify_http_request(
+        # Simulate intermediary adding headers (not in signed components)
+        detail = verify_http_request(
             verifier,
-            signature_header=sig_header,
+            signature_input=result_headers["signature-input"],
+            signature=result_headers["signature"],
             method="POST",
-            target_uri="/webhook",
+            target_uri="https://receiver.example.com/webhook",
             body=body,
             headers={
-                "x-request-id": "req-1",
+                "content-type": "application/json",
                 "x-forwarded-for": "10.0.0.1",     # Added by proxy
                 "via": "1.1 cloudflare",             # Added by CDN
                 "cf-ray": "abc123",                  # Added by CDN
             },
         )
-        assert result.passed, f"Failed: {result.reason}"
+        assert detail.passed, f"Failed: {detail.reason}"
+
+    def test_content_digest_included_for_body(self):
+        """Requests with a body should include content-digest."""
+        kp = UASIKeyPair.generate("s1", "example.com")
+        result = sign_http_request(
+            kp, method="POST",
+            target_uri="https://example.com/hook",
+            body=b'{"test": true}',
+        )
+        assert "content-digest" in result
+        assert "content-digest" in result["signature-input"]
+
+    def test_wrong_key_rejected_rfc9421(self):
+        """Wrong key should fail verification."""
+        kp = UASIKeyPair.generate("s1", "example.com")
+        wrong_kp = UASIKeyPair.generate("s1", "example.com")
+        body = b"test"
+        result = sign_http_request(
+            kp, method="POST",
+            target_uri="https://example.com/hook", body=body,
+        )
+        verifier = UASIVerifier()
+        verifier.add_key("example.com", "s1", wrong_kp.dns_key_record())
+        detail = verify_http_request(
+            verifier,
+            signature_input=result["signature-input"],
+            signature=result["signature"],
+            method="POST",
+            target_uri="https://example.com/hook",
+            body=body,
+        )
+        assert not detail.passed
+        assert "verification failed" in detail.reason.lower()
 
 
 # ─── Nonce Cache ───
