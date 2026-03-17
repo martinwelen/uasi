@@ -2,11 +2,11 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-23%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-40%20passing-brightgreen.svg)]()
 
-Reference implementation of the [UASI framework](https://github.com/martinwelen/uasi) (`draft-uasi-framework-00`), a protocol-agnostic mechanism for cryptographic sender identity assertion and verification across Internet communication protocols.
+Reference implementation of the [UASI framework](https://github.com/martinwelen/uasi) (`draft-uasi-framework-01`), a cross-protocol sender authentication framework that unifies identity, key discovery, and verification policy across Internet protocols.
 
-**UASI lets any sender — webhook, API, email server, IoT device — prove its identity using DNS-published keys and a single signature format that works across all protocols.**
+**UASI provides DNS-based key discovery and unified policy for existing signing standards (RFC 9421 for HTTP, DKIM for SMTP), plus native message-level signing for protocols that lack one (MQTT, CoAP, WebSocket).**
 
 ## Install
 
@@ -14,7 +14,7 @@ Reference implementation of the [UASI framework](https://github.com/martinwelen/
 pip install uasi
 ```
 
-## Quick Start: Sign a Webhook in 5 Lines
+## Quick Start: Sign a Webhook (RFC 9421 Profile)
 
 ```python
 from uasi import UASIKeyPair, sign_http_request
@@ -22,21 +22,23 @@ from uasi import UASIKeyPair, sign_http_request
 # Generate a key pair (one-time setup)
 key_pair = UASIKeyPair.generate("webhooks", "your-saas.example.com")
 print(key_pair.dns_zone_entry())
-# → webhooks._uasi.your-saas.example.com. 3600 IN TXT "v=UASI1; k=ed25519; p=..."
+# -> webhooks._uasi.your-saas.example.com. 3600 IN TXT "v=UASI1; k=ed25519; p=..."
 
-# Sign an outgoing webhook
-signature = sign_http_request(
+# Sign an outgoing webhook (produces RFC 9421 Signature-Input + Signature headers)
+sig_headers = sign_http_request(
     key_pair,
     method="POST",
     target_uri="https://customer.example.org/webhooks/orders",
     body=b'{"order_id": "789", "total": 99.50}',
-    headers={"x-webhook-event": "order.completed"},
-    signed_fields=["@method", "@target-uri", "x-webhook-event"],
+    headers={"content-type": "application/json"},
 )
-# Add as HTTP header: UASI-Signature: <signature>
+# Add to HTTP request:
+#   Signature-Input: uasi=("@method" "@authority" ...);keyid="webhooks._uasi.your-saas.example.com";...
+#   Signature: uasi=:<base64>:
+#   Content-Digest: sha-256=:<base64>:
 ```
 
-## Quick Start: Verify a Webhook in 5 Lines
+## Quick Start: Verify a Webhook
 
 ```python
 from uasi import UASIVerifier, verify_http_request
@@ -51,7 +53,8 @@ verifier.add_key_from_txt(
 # Verify incoming request
 result = verify_http_request(
     verifier,
-    signature_header=request.headers["UASI-Signature"],
+    signature_input=request.headers["Signature-Input"],
+    signature=request.headers["Signature"],
     method=request.method,
     target_uri=request.url,
     body=request.body,
@@ -59,6 +62,7 @@ result = verify_http_request(
 )
 
 if result.passed:
+    print(f"Verified (trust: {result.trust_tier.value})")
     process_webhook(request)
 else:
     print(f"Verification failed: {result.reason}")
@@ -75,121 +79,109 @@ Today, every protocol reinvents sender authentication independently:
 | MQTT/IoT | PSK or nothing | No domain-level identity |
 | APIs | OAuth/mTLS | Heavy, no message-level signing |
 
-UASI provides **one mechanism** that works across all of them: DNS-published Ed25519 keys, a unified signature format, and a DMARC-style policy framework.
+UASI provides a unified framework:
+- **HTTP**: Profiles RFC 9421 (HTTP Message Signatures) with DNS-based key discovery
+- **SMTP**: Wraps DKIM with unified policy and reporting
+- **MQTT/CoAP/WebSocket**: Native Ed25519 message signing
+
+One identity model, one key management approach, one policy engine across all protocols.
 
 ## Features
 
 - **Ed25519 signatures** — 64-byte signatures, fast verification, small DNS records
-- **DNS-anchored trust** — no PKI/CA required; publish keys as TXT records
-- **Protocol bindings** — HTTP (included), SMTP, MQTT, CoAP, WebSocket (spec-defined)
+- **RFC 9421 HTTP profile** — uses existing HTTP Message Signatures standard, not a custom format
+- **DNS-anchored trust** — publish keys as TXT records; DNSSEC preferred
+- **WebPKI fallback** — `.well-known/uasi-keys` HTTPS endpoint when DNSSEC is unavailable
+- **Three trust tiers** — `dnssec-verified`, `https-verified`, `dns-unsigned`
 - **Nonce-based replay detection** — optional per-message nonces with configurable cache
 - **Cross-protocol replay prevention** — `z=` context tag prevents protocol confusion
-- **Strict canonicalization** — signatures survive CDN/proxy header modifications
+- **Content-Digest** — SHA-256 body integrity per RFC 9530
 - **Prohibited header list** — prevents signing volatile headers that break in transit
-- **DMARC-style policy** — `none` → `report` → `enforce` gradual rollout
+- **DMARC-style policy** — `none` -> `report` -> `enforce` gradual rollout
+- **Minimum trust policy** — `mt=` tag lets operators require DNSSEC or accept WebPKI
 
 ## API Reference
 
 ### Key Management
 
 ```python
-from uasi import UASIKeyPair
+from uasi import UASIKeyPair, key_to_wellknown_json
 
 # Generate
 key_pair = UASIKeyPair.generate(selector="webhooks", domain="example.com")
 
-# Export for storage
-private_key_b64 = key_pair.private_key_b64  # Store securely
-public_key_b64 = key_pair.public_key_b64    # Publish in DNS
-
-# Reload
-key_pair = UASIKeyPair.from_private_key_b64(private_key_b64, "webhooks", "example.com")
-
-# DNS records
+# DNS record
 print(key_pair.dns_zone_entry(ttl=86400))
-print(key_pair.dns_txt_value(expiry=1735689600, notes="Q1 2026 key"))
+
+# .well-known JSON (serve at https://example.com/.well-known/uasi-keys/webhooks)
+import json
+print(json.dumps(key_to_wellknown_json(key_pair)))
+# -> {"v": "UASI1", "k": "ed25519", "p": "<base64>"}
+
+# Export / reload
+private_b64 = key_pair.private_key_b64  # Store securely
+key_pair = UASIKeyPair.from_private_key_b64(private_b64, "webhooks", "example.com")
 ```
 
-### Low-Level Signing
+### Low-Level Signing (MQTT, CoAP, WebSocket)
 
 ```python
 from uasi import UASISigner, UASIKeyPair, Canonicalization
 
-key_pair = UASIKeyPair.generate("api-v2", "example.com")
+key_pair = UASIKeyPair.generate("fleet-a", "iot.example.com")
 signer = UASISigner(
     key_pair,
-    canonicalization=Canonicalization.STRICT,
+    canonicalization=Canonicalization.SIMPLE,
     default_expiry_seconds=300,
     use_nonce=True,
 )
 
 sig = signer.sign(
-    body=b"payload bytes",
-    context="http",  # Protocol context tag
-    fields={"@method": "POST", "x-request-id": "req-123"},
-    signed_fields=["@method", "x-request-id"],
+    body=b'{"temp_c": 22.5}',
+    context="mqtt5",
+    fields={"@topic": "sensors/building-7/temp"},
+    signed_fields=["@topic"],
 )
-
 header_value = sig.serialize()
 ```
 
-### Low-Level Verification
+### Policy with Trust Tiers
 
 ```python
-from uasi import UASIVerifier, NonceCache
+from uasi import parse_policy_record, TrustTier, trust_tier_satisfies_policy
 
-cache = NonceCache(max_size=1_000_000)
-cache.set_fail_closed(True)  # For high-security endpoints
+# Parse policy with minimum trust requirement
+policy = parse_policy_record("v=UASI1; p=enforce; mt=https; rua=mailto:reports@example.com")
 
-verifier = UASIVerifier(nonce_cache=cache)
-verifier.add_key("sender.com", "webhooks", key_record)
-
-result = verifier.verify(
-    signature_header="v=1; a=ed25519-sha256; ...",
-    body=b"payload bytes",
-    context="http",
-    fields={"@method": "POST", "x-request-id": "req-123"},
-)
-
-print(result.result)   # VerificationResult.PASS
-print(result.reason)   # "Signature verified successfully"
-print(result.passed)   # True
-```
-
-### DNS Record Parsing
-
-```python
-from uasi import parse_key_record, parse_policy_record
-
-key = parse_key_record("v=UASI1; k=ed25519; p=BASE64KEY==")
-print(key.algorithm, key.is_expired)
-
-policy = parse_policy_record("v=UASI1; p=enforce; pct=50; b=http")
-print(policy.policy, policy.percentage, policy.bindings)
+# Check if a trust tier satisfies the policy
+trust_tier_satisfies_policy(TrustTier.DNSSEC_VERIFIED, policy)  # True
+trust_tier_satisfies_policy(TrustTier.HTTPS_VERIFIED, policy)   # True
+trust_tier_satisfies_policy(TrustTier.DNS_UNSIGNED, policy)     # False
 ```
 
 ## Security Properties
 
 | Property | Mechanism |
 |----------|-----------|
-| Sender authentication | Ed25519 digital signature over canonical message content |
-| Body integrity | SHA-256 hash of canonicalized body included in signature |
-| Cross-protocol replay prevention | `z=` context tag bound into signature |
-| Intra-protocol replay detection | Optional `n=` nonce with receiver-side cache |
-| Key discovery | DNS TXT records (DNSSEC recommended) |
-| Intermediary resilience | Strict mode signs only sender-controlled fields |
+| Sender authentication | Ed25519 digital signature |
+| Body integrity | Content-Digest (RFC 9530) for HTTP; SHA-256 body hash for native |
+| Cross-protocol replay prevention | `z=` context tag / RFC 9421 `tag` parameter |
+| Intra-protocol replay detection | Nonce with receiver-side cache |
+| Key discovery | DNS TXT (DNSSEC preferred) + `.well-known` HTTPS fallback |
+| Trust verification | Three tiers: dnssec-verified, https-verified, dns-unsigned |
+| Intermediary resilience | Only signed components are verified |
 
 ## Specification
 
-This library implements [`draft-uasi-framework-00`](https://datatracker.ietf.org/doc/draft-uasi-framework/). The full Internet-Draft is available in the [spec/](spec/) directory.
+This library implements [`draft-uasi-framework-01`](https://datatracker.ietf.org/doc/draft-uasi-framework/). The full Internet-Draft is available in the [spec/](spec/) directory.
 
 ## Contributing
 
-This is a reference implementation accompanying an Internet-Draft. Contributions, issues, and feedback are welcome — especially:
+Contributions, issues, and feedback are welcome — especially:
 
-- Additional protocol bindings (MQTT, CoAP, SMTP)
-- Production DNS resolver integration
+- Live DNS resolver integration (DNSSEC validation + `.well-known` fallback)
 - Framework integrations (Flask, FastAPI, Django, Express)
+- Additional protocol bindings (MQTT, CoAP native signing)
 - Interoperability testing
 
 ## License

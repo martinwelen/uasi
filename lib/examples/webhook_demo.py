@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-UASI Webhook Demo — End-to-end signing and verification.
+UASI Webhook Demo — End-to-end signing and verification (RFC 9421 profile).
 
-This script demonstrates:
+This script demonstrates the -01 revision of UASI using HTTP Message
+Signatures (RFC 9421) with UASI key discovery:
+
   1. Generating a UASI key pair
   2. Producing the DNS TXT record to publish
-  3. Signing an outgoing webhook request
+  3. Signing an outgoing webhook (RFC 9421 format)
   4. Verifying the webhook on the receiver side
-  5. Detecting body tampering
-  6. Detecting replay attacks
+  5. Detecting body tampering (via Content-Digest)
+  6. Detecting replay attacks (via nonce)
+  7. Intermediary resilience (non-signed headers survive)
 
 Run:
     cd lib
-    PYTHONPATH=src python examples/webhook_demo.py
+    PYTHONPATH=src python3 examples/webhook_demo.py
 """
 
 import json
@@ -21,6 +24,7 @@ from uasi import (
     UASIVerifier,
     sign_http_request,
     verify_http_request,
+    key_to_wellknown_json,
 )
 
 
@@ -31,7 +35,7 @@ def separator(title: str) -> None:
 
 
 def main() -> None:
-    # ── 1. Generate key pair ─────────────────────────────────
+    # 1. Generate key pair
     separator("1. Key Generation")
 
     key_pair = UASIKeyPair.generate("webhooks", "saas.example.com")
@@ -42,14 +46,20 @@ def main() -> None:
     print(f"Public key: {key_pair.public_key_b64[:40]}...")
     print()
 
-    # ── 2. DNS record ────────────────────────────────────────
+    # 2. DNS record
     separator("2. DNS Record (publish this)")
-
     print(key_pair.dns_zone_entry(ttl=86400, notes="Webhook signing key"))
     print()
 
-    # ── 3. Sign a webhook ────────────────────────────────────
-    separator("3. Signing a Webhook")
+    # 2b. .well-known fallback
+    separator("2b. .well-known/uasi-keys JSON (serve at HTTPS endpoint)")
+    wk = key_to_wellknown_json(key_pair)
+    print(f"GET https://saas.example.com/.well-known/uasi-keys/webhooks")
+    print(json.dumps(wk, indent=2))
+    print()
+
+    # 3. Sign a webhook (RFC 9421 format)
+    separator("3. Signing a Webhook (RFC 9421)")
 
     body = json.dumps({
         "event": "order.completed",
@@ -60,25 +70,23 @@ def main() -> None:
 
     headers = {
         "content-type": "application/json; charset=utf-8",
-        "x-webhook-event": "order.completed",
-        "x-request-id": "req-abc-123",
-        "host": "customer.example.org",
     }
 
-    sig_header = sign_http_request(
+    sig_headers = sign_http_request(
         key_pair,
         method="POST",
         target_uri="https://customer.example.org/webhooks/orders",
         body=body,
         headers=headers,
-        signed_fields=["@method", "@target-uri", "x-webhook-event", "x-request-id"],
         expiry_seconds=300,
     )
 
-    print(f"UASI-Signature: {sig_header[:80]}...")
+    print(f"Signature-Input: {sig_headers['signature-input'][:80]}...")
+    print(f"Signature:       {sig_headers['signature'][:60]}...")
+    print(f"Content-Digest:  {sig_headers['content-digest'][:60]}...")
     print()
 
-    # ── 4. Verify the webhook ────────────────────────────────
+    # 4. Verify the webhook
     separator("4. Verification (receiver side)")
 
     verifier = UASIVerifier()
@@ -86,19 +94,21 @@ def main() -> None:
 
     result = verify_http_request(
         verifier,
-        signature_header=sig_header,
+        signature_input=sig_headers["signature-input"],
+        signature=sig_headers["signature"],
         method="POST",
         target_uri="https://customer.example.org/webhooks/orders",
         body=body,
         headers=headers,
     )
 
-    print(f"Result:  {result.result.value}")
-    print(f"Reason:  {result.reason}")
-    print(f"Passed:  {result.passed}")
+    print(f"Result:     {result.result.value}")
+    print(f"Trust tier: {result.trust_tier.value}")
+    print(f"Reason:     {result.reason}")
+    print(f"Passed:     {result.passed}")
     print()
 
-    # ── 5. Tampered body detection ───────────────────────────
+    # 5. Tampered body detection
     separator("5. Tampered Body Detection")
 
     tampered_body = json.dumps({
@@ -110,7 +120,8 @@ def main() -> None:
 
     result_tampered = verify_http_request(
         verifier,
-        signature_header=sig_header,
+        signature_input=sig_headers["signature-input"],
+        signature=sig_headers["signature"],
         method="POST",
         target_uri="https://customer.example.org/webhooks/orders",
         body=tampered_body,
@@ -122,14 +133,14 @@ def main() -> None:
     print(f"Passed:  {result_tampered.passed}")
     print()
 
-    # ── 6. Replay detection ──────────────────────────────────
+    # 6. Replay detection
     separator("6. Replay Detection")
 
-    # The first verification already cached the nonce.
-    # A second attempt with the same signature is a replay.
+    # First verification already cached the nonce.
     result_replay = verify_http_request(
         verifier,
-        signature_header=sig_header,
+        signature_input=sig_headers["signature-input"],
+        signature=sig_headers["signature"],
         method="POST",
         target_uri="https://customer.example.org/webhooks/orders",
         body=body,
@@ -141,22 +152,20 @@ def main() -> None:
     print(f"Passed:  {result_replay.passed}")
     print()
 
-    # ── 7. Intermediary resilience ───────────────────────────
-    separator("7. Intermediary Adds Headers (strict mode)")
+    # 7. Intermediary resilience
+    separator("7. Intermediary Adds Headers")
 
-    # Sign a fresh request
-    sig_header2 = sign_http_request(
+    sig_headers2 = sign_http_request(
         key_pair,
         method="POST",
         target_uri="https://customer.example.org/webhooks/orders",
         body=body,
-        headers={"x-request-id": "req-xyz-789"},
-        signed_fields=["@method", "@target-uri", "x-request-id"],
+        headers={"content-type": "application/json"},
     )
 
     # Receiver sees extra headers added by CDN/proxy
     received_headers = {
-        "x-request-id": "req-xyz-789",
+        "content-type": "application/json",
         "x-forwarded-for": "10.0.0.1",
         "via": "1.1 cloudflare",
         "cf-ray": "abc123",
@@ -165,7 +174,8 @@ def main() -> None:
 
     result_intermediary = verify_http_request(
         verifier,
-        signature_header=sig_header2,
+        signature_input=sig_headers2["signature-input"],
+        signature=sig_headers2["signature"],
         method="POST",
         target_uri="https://customer.example.org/webhooks/orders",
         body=body,

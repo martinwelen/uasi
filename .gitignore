@@ -38,3 +38,8 @@ CLAUDE.md
 
 # Deck (not published)
 deck/
+
+# Confidential internal docs
+docs/review-tracker.md
+docs/secdispatch-response-ekr-draft.md
+docs/superpowers/
